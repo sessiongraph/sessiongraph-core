@@ -1,6 +1,6 @@
 -- Migration 001: initial schema. See spec section 4.
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,                    -- UUID v4
   project_hash TEXT NOT NULL,             -- SHA256 truncated to 16 chars
   project_name TEXT,                      -- inferred or null
@@ -18,7 +18,7 @@ CREATE TABLE sessions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE requests (
+CREATE TABLE IF NOT EXISTS requests (
   id TEXT PRIMARY KEY,                    -- UUID v4
   session_id TEXT NOT NULL REFERENCES sessions(id),
   sequence INTEGER NOT NULL,              -- request number within session
@@ -36,7 +36,7 @@ CREATE TABLE requests (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE session_graphs (
+CREATE TABLE IF NOT EXISTS session_graphs (
   id TEXT PRIMARY KEY,                    -- UUID v4
   session_id TEXT NOT NULL REFERENCES sessions(id),
   project_hash TEXT NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE session_graphs (
   UNIQUE(project_hash) ON CONFLICT REPLACE
 );
 
-CREATE TABLE token_usage_daily (
+CREATE TABLE IF NOT EXISTS token_usage_daily (
   date TEXT NOT NULL,                     -- YYYY-MM-DD
   provider TEXT NOT NULL,
   tokens_in_raw INTEGER DEFAULT 0,
@@ -61,14 +61,14 @@ CREATE TABLE token_usage_daily (
   PRIMARY KEY (date, provider)
 );
 
-CREATE TABLE settings (
+CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Default settings
-INSERT INTO settings (key, value) VALUES
+-- Default settings (idempotent — skips if key already exists)
+INSERT OR IGNORE INTO settings (key, value) VALUES
   ('proxy_port', '4200'),
   ('session_timeout_minutes', '30'),
   ('compression_enabled', 'true'),
@@ -80,9 +80,9 @@ INSERT INTO settings (key, value) VALUES
   ('onboarding_complete', 'false');
 
 -- Indices
-CREATE INDEX idx_sessions_project_hash ON sessions(project_hash);
-CREATE INDEX idx_sessions_started_at ON sessions(started_at);
-CREATE INDEX idx_requests_session_id ON requests(session_id);
-CREATE INDEX idx_requests_created_at ON requests(created_at);
-CREATE INDEX idx_session_graphs_project_hash ON session_graphs(project_hash);
-CREATE INDEX idx_token_usage_daily_date ON token_usage_daily(date);
+CREATE INDEX IF NOT EXISTS idx_sessions_project_hash ON sessions(project_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
+CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
+CREATE INDEX IF NOT EXISTS idx_session_graphs_project_hash ON session_graphs(project_hash);
+CREATE INDEX IF NOT EXISTS idx_token_usage_daily_date ON token_usage_daily(date);

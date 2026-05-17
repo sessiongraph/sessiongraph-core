@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="24" fill="#0f0f0f"/>
+  <rect width="128" height="128" rx="24" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <!-- Three connected nodes representing session graph -->
+  <circle cx="44" cy="44" r="14" fill="#6366f1" opacity="0.9"/>
+  <circle cx="84" cy="44" r="14" fill="#6366f1" opacity="0.9"/>
+  <circle cx="64" cy="84" r="14" fill="#6366f1" opacity="0.9"/>
+  <line x1="56" y1="50" x2="72" y2="50" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  <line x1="50" y1="56" x2="58" y2="72" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  <line x1="78" y1="56" x2="70" y2="72" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  <!-- SG monogram -->
+  <text x="64" y="60" text-anchor="middle" fill="#f4f4f5" font-family="Inter, sans-serif" font-size="28" font-weight="700">SG</text>
+</svg>

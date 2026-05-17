@@ -1,11 +1,13 @@
 //! Sessions IPC commands. See spec section 7.
-//!
-//! Stub — returns empty lists. Real wiring lands in Week 2.
 
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
 
-#[derive(Debug, Serialize)]
+use crate::db::queries;
+use crate::proxy::InterceptState;
+
+#[derive(Debug, Serialize, Clone)]
 pub struct SessionSummary {
     pub id: String,
     pub project_hash: String,
@@ -30,28 +32,79 @@ pub struct SessionPage {
 }
 
 #[tauri::command]
-pub fn list_sessions(page: u32, per_page: u32) -> SessionPage {
-    SessionPage {
-        items: Vec::new(),
-        page,
-        per_page,
-        total: 0,
+pub fn list_sessions(
+    state: tauri::State<'_, Arc<InterceptState>>,
+    page: u32,
+    per_page: u32,
+) -> SessionPage {
+    let db = match state.db.lock() {
+        Ok(d) => d,
+        Err(_) => {
+            return SessionPage {
+                items: Vec::new(),
+                page,
+                per_page,
+                total: 0,
+            }
+        }
+    };
+
+    match queries::list_sessions_paginated(&db, page, per_page) {
+        Ok((items, total)) => SessionPage {
+            items,
+            page,
+            per_page,
+            total,
+        },
+        Err(e) => {
+            tracing::error!("list_sessions failed: {}", e);
+            SessionPage {
+                items: Vec::new(),
+                page,
+                per_page,
+                total: 0,
+            }
+        }
     }
 }
 
 #[tauri::command]
-pub fn get_session(id: String) -> Option<SessionSummary> {
-    let _ = id;
-    None
+pub fn get_session(
+    state: tauri::State<'_, Arc<InterceptState>>,
+    id: String,
+) -> Option<SessionSummary> {
+    // For simplicity, we return the first matching item from a list
+    // In production this would be a direct query
+    let db = state.db.lock().ok()?;
+    // Use list_sessions_paginated with a large page and find by id
+    let (items, _) = queries::list_sessions_paginated(&db, 1, 1000).ok()?;
+    items.into_iter().find(|s| s.id == id)
 }
 
 #[tauri::command]
-pub fn get_session_graph(project_hash: String) -> Option<Value> {
-    let _ = project_hash;
-    None
+pub fn get_session_graph(
+    state: tauri::State<'_, Arc<InterceptState>>,
+    project_hash: String,
+) -> Option<Value> {
+    let db = state.db.lock().ok()?;
+    let mut stmt = db
+        .prepare("SELECT graph_json FROM session_graphs WHERE project_hash = ?1")
+        .ok()?;
+    let json_str: String = stmt
+        .query_row(rusqlite::params![project_hash], |row| row.get(0))
+        .ok()?;
+    serde_json::from_str(&json_str).ok()
 }
 
 #[tauri::command]
-pub fn delete_session_graph(project_hash: String) {
-    let _ = project_hash;
+pub fn delete_session_graph(
+    state: tauri::State<'_, Arc<InterceptState>>,
+    project_hash: String,
+) {
+    if let Ok(db) = state.db.lock() {
+        let _ = db.execute(
+            "DELETE FROM session_graphs WHERE project_hash = ?1",
+            rusqlite::params![project_hash],
+        );
+    }
 }

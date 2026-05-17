@@ -1,27 +1,29 @@
 // Dashboard live stats store (Zustand).
-// Stub: real data wiring lands in Week 1 Task 10.
-import { create } from "zustand";
+// Polls the Rust backend periodically for live token/cost stats.
 
-export type DashboardStats = {
-  today: {
-    tokensSaved: number;
-    costSavedUsd: number;
-    requests: number;
-    sessions: number;
-  };
-  total: {
-    tokensSaved: number;
-    costSavedUsd: number;
-    sessions: number;
-  };
-};
+import { create } from "zustand";
+import { tauri, type DashboardStats } from "../lib/tauri";
 
 type DashboardState = {
   stats: DashboardStats | null;
-  setStats: (stats: DashboardStats) => void;
+  connected: boolean;
+  /** Fetch latest stats from the proxy backend. */
+  fetchStats: () => Promise<void>;
 };
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   stats: null,
-  setStats: (stats) => set({ stats }),
+  connected: false,
+
+  fetchStats: async () => {
+    try {
+      const stats = await tauri.getDashboardStats();
+      set({ stats, connected: true });
+    } catch {
+      set({ connected: false });
+    }
+  },
 }));
+
+// Re-export the canonical types
+export type { DashboardStats, CurrentSession } from "../lib/tauri";

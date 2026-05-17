@@ -31,6 +31,9 @@ Thumbs.db
 .idea/
 *.swp
 
+# Claude Code local settings (permissions cache, not source)
+.claude/
+
 # Local SessionGraph data
 .sessiongraph/
 .sessiongraph-dev/

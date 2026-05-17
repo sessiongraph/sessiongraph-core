@@ -735,6 +735,28 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
             "UPDATE sessions SET status = 'extracted' WHERE id = ?1",
             rusqlite::params![&sid],
         );
+        // Increment the monthly session-save counter (T7 free tier enforcement).
+        // Reset if the stored month differs from the current month.
+        let current_month = chrono::Utc::now().format("%Y-%m").to_string();
+        let stored_month = queries::get_setting(conn, "sessions_saved_month")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if stored_month != current_month {
+            let _ = queries::set_setting(conn, "sessions_saved_this_month", "1");
+            let _ = queries::set_setting(conn, "sessions_saved_month", &current_month);
+        } else {
+            let count: u32 = queries::get_setting(conn, "sessions_saved_this_month")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let _ = queries::set_setting(
+                conn,
+                "sessions_saved_this_month",
+                &(count + 1).to_string(),
+            );
+        }
     })
     .await
     .is_none()

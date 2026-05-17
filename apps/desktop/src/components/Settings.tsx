@@ -225,7 +225,7 @@ export default function Settings({ onClose }: Props) {
         </p>
         {settings.tier === "free" && (
           <a
-            href="https://sessiongraph.dev/upgrade"
+            href="https://sessiongraph.dev/pricing"
             target="_blank"
             rel="noopener noreferrer"
             className="mt-2 inline-block text-sm text-accent hover:underline"

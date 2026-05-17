@@ -129,10 +129,11 @@ fn cli_snippet(port: u16) -> String {
 /// Set persistent user env vars pointing AI tools to the proxy.
 /// Written to HKCU\Environment so new processes auto-discover the proxy.
 /// Called when proxy starts, removed when proxy stops (see `remove_proxy_env_vars`).
+#[cfg(not(windows))]
+pub fn set_proxy_env_vars(_port: u16) {}
+
+#[cfg(windows)]
 pub fn set_proxy_env_vars(port: u16) {
-    if !cfg!(windows) {
-        return;
-    }
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let proxy_url = format!("http://localhost:{port}");
@@ -278,6 +279,7 @@ fn opencode_config_path() -> Option<std::path::PathBuf> {
 
 /// Broadcast WM_SETTINGCHANGE with "Environment" so Windows shells and
 /// apps that listen for env changes (Explorer, ConEmu, etc.) reload env vars.
+#[cfg(windows)]
 fn broadcast_env_change() {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -320,10 +322,11 @@ unsafe fn windows_broadcast_setting_change(_env_ptr: *const u16) {}
 
 /// Remove persistent user env vars for the proxy.
 /// Called when proxy stops so new processes fall back to direct connection.
+#[cfg(not(windows))]
+pub fn remove_proxy_env_vars() {}
+
+#[cfg(windows)]
 pub fn remove_proxy_env_vars() {
-    if !cfg!(windows) {
-        return;
-    }
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let names = [

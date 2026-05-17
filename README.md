@@ -90,3 +90,5 @@ Output: `src-tauri/target/release/bundle/msi/SessionGraph_0.1.0_x64_en-US.msi`
 ## License
 
 MIT
+
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/sessiongraph/sessiongraph-core?utm_source=oss&utm_medium=github&utm_campaign=sessiongraph%2Fsessiongraph-core&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)

@@ -236,6 +236,7 @@ pub fn get_dashboard_stats_for_date(
         today: today_stats,
         total: total_stats,
         current_session,
+        active_sessions: vec![],
     })
 }
 

@@ -41,7 +41,7 @@ export default function Dashboard() {
 
   const today = stats?.today;
   const total = stats?.total;
-  const live = stats?.current_session;
+  const activeSessions = stats?.active_sessions ?? [];
 
   return (
     <main className="mx-auto max-w-5xl px-8 py-10">
@@ -69,11 +69,11 @@ export default function Dashboard() {
         <StatCard
           label="Compression"
           value={
-            live && live.tokens_in_raw > 0
-              ? `${((1 - live.compression_ratio) * 100).toFixed(0)}%`
+            activeSessions.length > 0 && activeSessions.some(s => s.tokens_in_raw > 0)
+              ? `${((1 - activeSessions.reduce((a, s) => a + (s.tokens_in_raw > 0 ? s.compression_ratio : 1), 0) / activeSessions.length) * 100).toFixed(0)}%`
               : "—"
           }
-          sub={live ? "avg ratio" : undefined}
+          sub={activeSessions.length > 0 ? "avg ratio" : undefined}
         />
         <StatCard
           label="Requests"
@@ -109,39 +109,54 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* ── Live session ─────────────────────────────── */}
-      {live && (
-        <section className="mt-6 rounded-lg border border-border bg-surface p-5">
+      {/* ── Live sessions ───────────────────────────── */}
+      {stats?.active_sessions && stats.active_sessions.length > 0 && (
+        <section className="mt-6 space-y-3">
           <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-            Live Session
+            Live {stats.active_sessions.length === 1 ? "Session" : "Sessions"}
           </span>
-          <div className="mt-2 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
-            <div>
-              <p className="text-text-secondary">Session</p>
-              <p className="font-mono text-xs text-text-primary">
-                {live.id.slice(0, 8)}…
-              </p>
+          {stats.active_sessions.map((s) => (
+            <div key={s.id} className="rounded-lg border border-border bg-surface p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`inline-block h-2 w-2 rounded-full ${s.provider === "anthropic" ? "bg-amber-400" : "bg-accent"}`} />
+                <span className="text-xs font-medium text-text-primary">
+                  {s.project_name ?? s.id.slice(0, 8)}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  · {s.provider}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+                <div>
+                  <p className="text-text-secondary">Session</p>
+                  <p className="font-mono text-xs text-text-primary">
+                    {s.id.slice(0, 8)}…
+                  </p>
+                </div>
+                <div>
+                  <p className="text-text-secondary">Tokens Sent</p>
+                  <p className="text-text-primary">{fmtTokens(s.tokens_in_sent)}</p>
+                </div>
+                <div>
+                  <p className="text-text-secondary">Raw Would Be</p>
+                  <p className="text-text-primary">{fmtTokens(s.tokens_in_raw)}</p>
+                </div>
+                <div>
+                  <p className="text-text-secondary">Saving</p>
+                  <p className="text-success">
+                    {s.tokens_in_raw > 0
+                      ? `${((1 - s.compression_ratio) * 100).toFixed(0)}%`
+                      : "—"}
+                  </p>
+                </div>
+              </div>
             </div>
-            <div>
-              <p className="text-text-secondary">Tokens Sent</p>
-              <p className="text-text-primary">{fmtTokens(live.tokens_in_sent)}</p>
-            </div>
-            <div>
-              <p className="text-text-secondary">Raw Would Be</p>
-              <p className="text-text-primary">{fmtTokens(live.tokens_in_raw)}</p>
-            </div>
-            <div>
-              <p className="text-text-secondary">Saving</p>
-              <p className="text-success">
-                {((1 - live.compression_ratio) * 100).toFixed(0)}% fewer tokens
-              </p>
-            </div>
-          </div>
+          ))}
         </section>
       )}
 
       {/* ── Empty state ──────────────────────────────── */}
-      {!live && (
+      {(!stats?.active_sessions || stats.active_sessions.length === 0) && (
         <section className="mt-8 text-center">
           <p className="text-text-secondary">
             No active session detected. Point your AI coding tool at

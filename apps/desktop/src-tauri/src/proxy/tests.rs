@@ -120,9 +120,15 @@ mod proxy_tests {
     }
 
     #[test]
-    fn compute_cost_for_deepseek_is_free() {
+    fn compute_cost_for_deepseek_chat() {
         let cost = forward::compute_cost("deepseek-chat", 1_000_000, 1_000_000);
-        assert_eq!(cost, 0.0);
+        assert!((cost - 1.37).abs() < 0.01); // $0.27 + $1.10
+    }
+
+    #[test]
+    fn compute_cost_for_deepseek_reasoner() {
+        let cost = forward::compute_cost("deepseek-reasoner", 1_000_000, 1_000_000);
+        assert!((cost - 2.74).abs() < 0.01); // $0.55 + $2.19
     }
 
     // ── Model extraction ─────────────────────────────────────────────

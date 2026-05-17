@@ -29,6 +29,8 @@ pub struct CurrentSession {
     pub tokens_in_raw: u64,
     pub tokens_in_sent: u64,
     pub compression_ratio: f64,
+    pub provider: String,
+    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -36,6 +38,7 @@ pub struct DashboardStats {
     pub today: TodayStats,
     pub total: TotalStats,
     pub current_session: Option<CurrentSession>,
+    pub active_sessions: Vec<CurrentSession>,
 }
 
 #[tauri::command]
@@ -54,9 +57,9 @@ pub async fn get_dashboard_stats(
         }
     };
 
-    let current_session = {
+    let (current_session, active_sessions) = {
         let sessions = state.active_sessions.lock().await;
-        sessions.first().map(|s| CurrentSession {
+        let all: Vec<CurrentSession> = sessions.iter().map(|s| CurrentSession {
             id: s.id.clone(),
             active: true,
             tokens_in_raw: s.tokens_in_raw,
@@ -66,13 +69,18 @@ pub async fn get_dashboard_stats(
             } else {
                 0.0
             },
-        })
+            provider: s.provider.clone(),
+            project_name: s.project_name.clone(),
+        }).collect();
+        let first = all.first().cloned();
+        (first, all)
     };
 
     Ok(DashboardStats {
         today: today_stats.unwrap_or_default(),
         total: total_stats.unwrap_or_default(),
         current_session,
+        active_sessions,
     })
 }
 
@@ -91,6 +99,8 @@ pub async fn get_current_session(
         } else {
             0.0
         },
+        provider: s.provider.clone(),
+        project_name: s.project_name.clone(),
     }))
 }
 

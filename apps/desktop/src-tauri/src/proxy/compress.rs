@@ -68,6 +68,7 @@ pub async fn compress(messages: &[serde_json::Value], model: &str) -> Option<Com
 
     // Prevent a console window flashing on Windows for every compression call.
     #[cfg(windows)]
+    #[allow(unused_imports)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW

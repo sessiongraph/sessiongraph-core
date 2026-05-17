@@ -101,3 +101,46 @@ pub fn delete_session_graph(state: tauri::State<'_, Arc<InterceptState>>, projec
         );
     }
 }
+
+/// Lightweight graph index for the memory browser — no full JSON payload.
+#[derive(Debug, Serialize, Clone)]
+pub struct GraphEntry {
+    pub project_hash: String,
+    pub project_name: Option<String>,
+    pub token_count: i64,
+    pub last_updated: String,
+    pub created_at: String,
+    pub stack: Vec<String>,
+    pub current_task: Option<String>,
+}
+
+#[tauri::command]
+pub fn list_graphs(state: tauri::State<'_, Arc<InterceptState>>) -> Vec<GraphEntry> {
+    let db = match state.db.lock() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let entries = match queries::list_graphs(&db) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("list_graphs failed: {}", e);
+            return Vec::new();
+        }
+    };
+    entries
+        .into_iter()
+        .map(|e| {
+            let stack: Vec<String> =
+                serde_json::from_str(&e.stack_json).unwrap_or_default();
+            GraphEntry {
+                project_hash: e.project_hash,
+                project_name: e.project_name,
+                token_count: e.token_count,
+                last_updated: e.last_updated,
+                created_at: e.created_at,
+                stack,
+                current_task: e.current_task,
+            }
+        })
+        .collect()
+}

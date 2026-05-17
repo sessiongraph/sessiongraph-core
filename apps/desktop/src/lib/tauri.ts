@@ -68,6 +68,16 @@ export type SessionGraph = {
 
 export type Settings = Record<string, string>;
 
+export type GraphEntry = {
+  project_hash: string;
+  project_name: string | null;
+  token_count: number;
+  last_updated: string;
+  created_at: string;
+  stack: string[];
+  current_task: string | null;
+};
+
 export type ProxyStatus = {
   running: boolean;
   port: number;
@@ -108,6 +118,7 @@ export const tauri = {
   // sessions
   listSessions: (page: number, perPage: number) =>
     invoke<SessionPage>("list_sessions", { page, perPage }),
+  listGraphs: () => invoke<GraphEntry[]>("list_graphs"),
   getSession: (id: string) => invoke<SessionSummary | null>("get_session", { id }),
   getSessionGraph: (projectHash: string) =>
     invoke<SessionGraph | null>("get_session_graph", { projectHash }),

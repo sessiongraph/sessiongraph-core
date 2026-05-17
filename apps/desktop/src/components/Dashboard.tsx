@@ -4,6 +4,7 @@ import { useSessionsStore } from "../stores/sessions";
 import { tauri, type DailyTokenUsage, type ProxyStatus } from "../lib/tauri";
 import SessionList from "./SessionList";
 import SessionDetail from "./SessionDetail";
+import MemoryBrowser from "./MemoryBrowser";
 
 function fmtUsd(n: number): string {
   if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
@@ -36,6 +37,7 @@ export default function Dashboard() {
   const { sessions } = useSessionsStore();
   const [chartData, setChartData] = useState<DailyTokenUsage[]>([]);
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
+  const [bottomTab, setBottomTab] = useState<"sessions" | "memory">("sessions");
 
   useEffect(() => {
     void tauri.getProxyStatus().then(setProxyStatus);
@@ -270,9 +272,34 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Session list + detail ─────────────────────────────────────────── */}
-      <SessionList />
-      <SessionDetail />
+      {/* ── Bottom panel: Sessions | Memory ──────────────────────────────── */}
+      <div className="flex flex-col gap-3">
+        {/* Tab bar */}
+        <div className="flex items-center gap-1 border-b border-border pb-0 -mb-1">
+          {(["sessions", "memory"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setBottomTab(tab)}
+              className={`px-3 py-1.5 text-[11px] font-semibold capitalize rounded-t transition-colors ${
+                bottomTab === tab
+                  ? "text-text-primary border-b-2 border-accent -mb-px"
+                  : "text-text-secondary/60 hover:text-text-secondary"
+              }`}
+            >
+              {tab === "sessions" ? "Sessions" : "Memory"}
+            </button>
+          ))}
+        </div>
+
+        {bottomTab === "sessions" ? (
+          <>
+            <SessionList />
+            <SessionDetail />
+          </>
+        ) : (
+          <MemoryBrowser />
+        )}
+      </div>
     </main>
   );
 }

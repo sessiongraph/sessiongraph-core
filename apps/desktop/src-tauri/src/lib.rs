@@ -198,6 +198,7 @@ pub fn run() {
             commands::sessions::get_session,
             commands::sessions::get_session_graph,
             commands::sessions::delete_session_graph,
+            commands::sessions::list_graphs,
             commands::settings::get_settings,
             commands::settings::update_setting,
             commands::settings::get_proxy_status,

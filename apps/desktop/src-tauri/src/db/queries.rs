@@ -381,6 +381,51 @@ pub fn delete_all_data(conn: &Connection) -> anyhow::Result<()> {
 }
 
 /// Paginated list of past sessions.
+/// Lightweight graph index entry — no full JSON, just metadata for the browser list.
+pub struct GraphEntry {
+    pub project_hash: String,
+    pub project_name: Option<String>,
+    pub token_count: i64,
+    pub last_updated: String,
+    pub created_at: String,
+    /// JSON array string of the stack (e.g. `["Rust","React"]`), parsed from graph_json.
+    pub stack_json: String,
+    /// current_task from graph_json state, for preview.
+    pub current_task: Option<String>,
+}
+
+/// Return all saved session graphs ordered by last_updated DESC.
+pub fn list_graphs(conn: &Connection) -> anyhow::Result<Vec<GraphEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT g.project_hash,
+                s.project_name,
+                g.token_count,
+                g.created_at,
+                g.created_at,
+                json_extract(g.graph_json, '$.project.stack'),
+                json_extract(g.graph_json, '$.state.current_task')
+         FROM session_graphs g
+         LEFT JOIN sessions s ON g.session_id = s.id
+         ORDER BY g.created_at DESC",
+    )?;
+
+    let items = stmt
+        .query_map([], |row| {
+            Ok(GraphEntry {
+                project_hash: row.get(0)?,
+                project_name: row.get(1)?,
+                token_count: row.get(2)?,
+                created_at: row.get(3)?,
+                last_updated: row.get(4)?,
+                stack_json: row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "[]".into()),
+                current_task: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(items)
+}
+
 pub fn list_sessions_paginated(
     conn: &Connection,
     page: u32,

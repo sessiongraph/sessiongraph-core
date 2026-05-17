@@ -73,9 +73,8 @@ pub fn init_mitm() -> Result<Arc<MitmState>, String> {
         (ca_cert, ca_key_pem)
     };
 
-    if cfg!(windows) {
-        install_ca_windows(&ca_cert_path);
-    }
+    #[cfg(windows)]
+    install_ca_windows(&ca_cert_path);
 
     Ok(Arc::new(MitmState {
         ca_cert,
@@ -84,6 +83,7 @@ pub fn init_mitm() -> Result<Arc<MitmState>, String> {
     }))
 }
 
+#[cfg(windows)]
 fn install_ca_windows(ca_cert_path: &std::path::Path) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;

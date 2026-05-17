@@ -107,12 +107,17 @@ mod proxy_tests {
     }
 
     #[test]
-    fn bytes_to_tokens_rounds_up() {
-        assert_eq!(forward::bytes_to_tokens(0), 0);
-        assert_eq!(forward::bytes_to_tokens(1), 1);
-        assert_eq!(forward::bytes_to_tokens(4), 1);
-        assert_eq!(forward::bytes_to_tokens(5), 2);
-        assert_eq!(forward::bytes_to_tokens(400), 100);
+    fn estimate_tokens_ceiling_div_by_4() {
+        // estimate_tokens serialises the value to JSON then does ceil(chars / 4).
+        // A JSON string `""` is 2 chars → 1 token; `"a"` is 3 chars → 1 token.
+        let s = |v: &str| serde_json::Value::String(v.to_string());
+        assert_eq!(forward::estimate_tokens(&s("")), 1); // `""` = 2 chars → 1
+        assert_eq!(forward::estimate_tokens(&s("a")), 1); // `"a"` = 3 chars → 1
+                                                          // 14-char JSON string `"aaaaaaaaaaaa"` = 14 chars → ceil(14/4) = 4
+        assert_eq!(forward::estimate_tokens(&s("aaaaaaaaaaaa")), 4);
+        // Large body: 400 'a' chars inside quotes = 402 JSON chars → ceil(402/4) = 101
+        let t = forward::estimate_tokens(&s(&"a".repeat(400)));
+        assert!((99..=103).contains(&t), "expected ~101 tokens, got {t}");
     }
 
     // ── Cost computation ─────────────────────────────────────────────

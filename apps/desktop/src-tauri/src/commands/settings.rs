@@ -183,7 +183,10 @@ pub fn set_proxy_env_vars(port: u16) {
         match status {
             Ok(s) if s.success() => {}
             Ok(s) => {
-                tracing::warn!("setx {name}={value} failed: exit {}", s.code().unwrap_or(-1));
+                tracing::warn!(
+                    "setx {name}={value} failed: exit {}",
+                    s.code().unwrap_or(-1)
+                );
                 ok = false;
             }
             Err(e) => {
@@ -249,7 +252,10 @@ fn write_opencode_config(port: u16) {
         }
     }
 
-    match std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+    match std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    ) {
         Ok(_) => tracing::info!("opencode config written to {}", config_path.display()),
         Err(e) => tracing::warn!("Failed to write opencode config: {e}"),
     }
@@ -258,7 +264,8 @@ fn write_opencode_config(port: u16) {
 /// Return the path opencode uses for its config file.
 /// Follows XDG: $XDG_CONFIG_HOME/opencode/opencode.json, else ~/.config/opencode/opencode.json
 fn opencode_config_path() -> Option<std::path::PathBuf> {
-    let config_base = std::env::var("XDG_CONFIG_HOME").ok()
+    let config_base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| {
             let home = std::env::var("USERPROFILE")
@@ -298,11 +305,11 @@ unsafe fn windows_broadcast_setting_change(env_ptr: *const u16) {
     }
     let mut result: usize = 0;
     SendMessageTimeoutW(
-        0xFFFF_isize,   // HWND_BROADCAST
-        0x001A,         // WM_SETTINGCHANGE
+        0xFFFF_isize, // HWND_BROADCAST
+        0x001A,       // WM_SETTINGCHANGE
         0,
         env_ptr as isize,
-        0x0002,         // SMTO_ABORTIFHUNG
+        0x0002, // SMTO_ABORTIFHUNG
         1000,
         &mut result,
     );
@@ -355,9 +362,11 @@ pub fn remove_proxy_env_vars() {
             if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(obj) = config.as_object_mut() {
                     let mut changed = false;
-                    if let Some(provider) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
+                    if let Some(provider) = obj.get_mut("provider").and_then(|p| p.as_object_mut())
+                    {
                         for key in &["anthropic", "openai", "openrouter"] {
-                            let is_ours = provider.get(*key)
+                            let is_ours = provider
+                                .get(*key)
                                 .and_then(|v| v.get("options"))
                                 .and_then(|o| o.get("baseURL"))
                                 .and_then(|u| u.as_str())

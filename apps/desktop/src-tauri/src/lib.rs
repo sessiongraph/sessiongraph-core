@@ -33,7 +33,9 @@ pub fn run() {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_else(|_| ".".into());
-        std::path::PathBuf::from(home).join(".sessiongraph").join("proxy.log")
+        std::path::PathBuf::from(home)
+            .join(".sessiongraph")
+            .join("proxy.log")
     };
     let _ = std::fs::create_dir_all(log_path.parent().unwrap());
     let log_file = std::fs::OpenOptions::new()
@@ -159,6 +161,7 @@ pub fn run() {
 
     let shutdown_state = state.clone();
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .manage(state.clone())
         // Store the shutdown sender so we can cleanly stop the proxy on exit
@@ -247,7 +250,13 @@ async fn sync_daily_usage(
             let sessions_restored = read_stat_u64(&conn, "sessions_restored_total");
             let sessions_saved = read_stat_u64(&conn, "sessions_saved_this_month") as u32;
             let cost_saved_usd = read_stat_f64(&conn, "cost_saved_usd_total");
-            Some((tokens_compressed, tokens_saved, sessions_restored, sessions_saved, cost_saved_usd))
+            Some((
+                tokens_compressed,
+                tokens_saved,
+                sessions_restored,
+                sessions_saved,
+                cost_saved_usd,
+            ))
         }
     })
     .await
@@ -262,8 +271,8 @@ async fn sync_daily_usage(
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-    let server_url = std::env::var("SG_SERVER_URL")
-        .unwrap_or_else(|_| "https://sessiongraph.dev".into());
+    let server_url =
+        std::env::var("SG_SERVER_URL").unwrap_or_else(|_| "https://sessiongraph.dev".into());
     let url = format!("{}/api/usage/sync", server_url);
 
     let payload = serde_json::json!({

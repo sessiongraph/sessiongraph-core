@@ -17,16 +17,13 @@ use std::sync::Arc;
 type ByteStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send>>;
 
-/// Result of a forward request including the response and output token count.
-/// The token count can be retrieved after the response body is fully consumed.
+/// Result of a forward request including the response and real token counts.
+/// The counts are populated asynchronously by a background SSE parser task
+/// and can be read after the response body is fully consumed.
 pub struct ForwardResult {
     pub response: Response,
-    pub token_count: Arc<AtomicU64>,
-}
-
-/// Estimates token count from byte count (4 chars ≈ 1 token).
-pub fn bytes_to_tokens(bytes: u64) -> u64 {
-    bytes.div_ceil(4)
+    pub input_token_count: Arc<AtomicU64>,
+    pub output_token_count: Arc<AtomicU64>,
 }
 
 // ── Provider detection ────────────────────────────────────────────────────
@@ -175,6 +172,7 @@ async fn stream_post(
 ) -> Result<ForwardResult, ForwardError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
+        .no_proxy()  // never route through system proxy — would loop back to ourselves
         .build()
         .map_err(|e| ForwardError::BuildClient(e.to_string()))?;
 
@@ -235,21 +233,40 @@ async fn stream_post(
         resp = resp.header(key.as_str(), value.as_bytes());
     }
 
-    // Create a counter to track bytes as they stream through
-    // This is updated in real-time as each chunk is sent
-    let byte_counter = Arc::new(AtomicU64::new(0));
+    // Tee the SSE stream: each chunk goes to the client immediately AND to a
+    // background channel so we can parse real usage counts without blocking.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
-    let counter_clone = byte_counter.clone();
-    let byte_stream: ByteStream =
+    let tee_stream: ByteStream =
         Box::pin(upstream_response.bytes_stream().map(move |r| match r {
             Ok(bytes) => {
-                let len = bytes.len() as u64;
-                counter_clone.fetch_add(len, Ordering::Relaxed);
+                let _ = tx.send(bytes.clone());
                 Ok(bytes)
             }
             Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
         }));
-    let axum_body = Body::from_stream(byte_stream);
+    let axum_body = Body::from_stream(tee_stream);
+
+    let input_tokens = Arc::new(AtomicU64::new(0));
+    let output_tokens = Arc::new(AtomicU64::new(0));
+    let input_clone = input_tokens.clone();
+    let output_clone = output_tokens.clone();
+
+    // Background task: drain the tee channel, concatenate all chunks, then
+    // parse the real input/output token counts from the SSE events.
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            buf.extend_from_slice(&chunk);
+        }
+        let (inp, out) = parse_sse_usage(&buf);
+        if inp > 0 {
+            input_clone.store(inp, Ordering::Relaxed);
+        }
+        if out > 0 {
+            output_clone.store(out, Ordering::Relaxed);
+        }
+    });
 
     let response = resp
         .body(axum_body)
@@ -257,8 +274,78 @@ async fn stream_post(
 
     Ok(ForwardResult {
         response,
-        token_count: byte_counter,
+        input_token_count: input_tokens,
+        output_token_count: output_tokens,
     })
+}
+
+/// Parse real input/output token counts from a complete SSE response body.
+///
+/// Handles both Anthropic and OpenAI/compatible SSE formats:
+/// - Anthropic: `data:` lines contain JSON with `usage.input_tokens` /
+///   `usage.output_tokens`. The final `message_delta` event carries
+///   cumulative output_tokens; the `message_start` event carries input_tokens.
+/// - OpenAI: the last non-`[DONE]` `data:` line before `data: [DONE]` contains
+///   `usage.prompt_tokens` (input) and `usage.completion_tokens` (output).
+///
+/// The function returns the last non-zero values found so that the final
+/// (most accurate) usage event always wins.
+pub fn parse_sse_usage(buf: &[u8]) -> (u64, u64) {
+    let text = String::from_utf8_lossy(buf);
+    let mut best_input: u64 = 0;
+    let mut best_output: u64 = 0;
+
+    for line in text.lines() {
+        let line = line.trim();
+        let json_str = if let Some(rest) = line.strip_prefix("data:") {
+            rest.trim()
+        } else {
+            continue;
+        };
+
+        // Skip the OpenAI stream terminator
+        if json_str == "[DONE]" {
+            continue;
+        }
+
+        let obj: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let usage = match obj.get("usage") {
+            Some(u) if u.is_object() => u,
+            _ => continue,
+        };
+
+        // OpenAI / OpenAI-compatible: prompt_tokens + completion_tokens
+        if let (Some(inp), Some(out)) = (
+            usage.get("prompt_tokens").and_then(|v| v.as_u64()),
+            usage.get("completion_tokens").and_then(|v| v.as_u64()),
+        ) {
+            if inp > 0 {
+                best_input = inp;
+            }
+            if out > 0 {
+                best_output = out;
+            }
+            continue;
+        }
+
+        // Anthropic: input_tokens (message_start) or output_tokens (message_delta/stop)
+        if let Some(inp) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+            if inp > 0 {
+                best_input = inp;
+            }
+        }
+        if let Some(out) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+            if out > 0 {
+                best_output = out;
+            }
+        }
+    }
+
+    (best_input, best_output)
 }
 
 /// Resolve the upstream URL for a detected provider.
@@ -371,7 +458,7 @@ pub fn detect_tool(headers: &HeaderMap, provider: &Provider) -> Option<String> {
 
     if ua.contains("claude-code") || ua.contains("claudecli") {
         Some("claude-code".into())
-    } else if ua.contains("opencode") {
+    } else if ua.contains("opencode") || ua.contains("opecode") {
         Some("opencode".into())
     } else if ua.contains("cursor") {
         Some("cursor".into())
@@ -381,7 +468,11 @@ pub fn detect_tool(headers: &HeaderMap, provider: &Provider) -> Option<String> {
         Some("continue".into())
     } else if ua.contains("aider") {
         Some("aider".into())
-    } else if ua.contains("antigravity") || ua.contains("google-gemini-cli") {
+    } else if ua.contains("antigravity")
+        || ua.contains("google-gemini-cli")
+        || ua.contains("gemini-cli")
+        || ua.contains("google-cloud-sdk")
+    {
         Some("antigravity".into())
     } else if ua.contains("cline") {
         Some("cline".into())
@@ -438,13 +529,27 @@ pub fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
             (0.075, 0.30) // Gemini Flash via OpenRouter
         } else if m.contains("gemini") {
             (1.25, 5.0) // Gemini Pro
-        } else if m.contains("llama")
+        // MiniMax models
+        } else if m.contains("abab6.5s") {
+            (0.10, 0.10)
+        } else if m.contains("abab5.5") {
+            (0.15, 0.15)
+        }
+        // Qwen (Alibaba) models
+        else if m.contains("qwen") {
+            (0.50, 1.50)
+        }
+        // GLM / Zhipu AI models
+        else if m.contains("glm") {
+            (0.50, 1.50)
+        }
+        // Open-source models on OpenRouter / together.ai / etc.
+        else if m.contains("llama")
             || m.contains("mistral")
             || m.contains("mixtral")
-            || m.contains("qwen")
             || m.contains("yi-")
         {
-            (0.15, 0.15) // Open-source models on OpenRouter
+            (0.15, 0.15)
         }
         // Default
         else {

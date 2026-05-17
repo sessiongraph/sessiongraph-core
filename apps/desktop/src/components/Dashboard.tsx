@@ -1,295 +1,354 @@
-// Dashboard — primary view. See spec section 6.3.
-
 import { useEffect, useState } from "react";
 import { useDashboardStore } from "../stores/dashboard";
+import { useSessionsStore } from "../stores/sessions";
 import { tauri, type DailyTokenUsage, type ProxyStatus } from "../lib/tauri";
 import SessionList from "./SessionList";
 import SessionDetail from "./SessionDetail";
 
-/** Format a USD amount with 2 decimal places. */
 function fmtUsd(n: number): string {
+  if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  if (n < 0.01) return `$${n.toFixed(4)}`;
   return `$${n.toFixed(2)}`;
 }
 
-/** Format a token count with K/M suffix. */
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }
 
-/** Short ordinal string (e.g. "42", "3 sessions"). */
-function fmtCount(n: number, unit: string): string {
-  return `${n} ${unit}${n !== 1 ? "s" : ""}`;
+function fmtRelative(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const diffMs = Date.now() - d.getTime();
+    const diffH = diffMs / 3_600_000;
+    if (diffH < 1) return `${Math.floor(diffMs / 60_000)}m ago`;
+    if (diffH < 24) return `${Math.floor(diffH)}h ago`;
+    if (diffH < 48) return "yesterday";
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return iso;
+  }
 }
 
 export default function Dashboard() {
   const { stats, connected, fetchStats } = useDashboardStore();
+  const { sessions } = useSessionsStore();
   const [chartData, setChartData] = useState<DailyTokenUsage[]>([]);
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
 
-  // Fetch proxy status once at mount for dynamic port display
   useEffect(() => {
     void tauri.getProxyStatus().then(setProxyStatus);
   }, []);
 
-  // Poll the backend every 5 seconds
   useEffect(() => {
     void fetchStats();
     const id = setInterval(() => void fetchStats(), 5_000);
     return () => clearInterval(id);
   }, [fetchStats]);
 
-  // Fetch 7-day chart data — only re-fetch when the day changes
   useEffect(() => {
     let cancelled = false;
-    void tauri.getTokenUsageChart(7).then((data) => {
-      if (!cancelled) setChartData(data);
-    }).catch(() => {});
+    void tauri
+      .getTokenUsageChart(7)
+      .then((data) => { if (!cancelled) setChartData(data); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [new Date().toISOString().slice(0, 10)]);
 
   const today = stats?.today;
   const total = stats?.total;
   const activeSessions = stats?.active_sessions ?? [];
+  const port = proxyStatus?.port ?? 4200;
+
+  const hasActivity = (today?.requests ?? 0) > 0;
+  const hasTotal = (total?.sessions ?? 0) > 0;
+
+  const sessionsWithGraphs = sessions.filter((s) => s.has_graph).length;
+  const projectsWithMemory = new Set(
+    sessions.filter((s) => s.has_graph).map((s) => s.project_hash),
+  ).size;
+  const memoryTokensSaved = sessionsWithGraphs * 400 * 0.85;
+  const memoryCostSaved = (memoryTokensSaved / 1_000_000) * 3.0;
+  const lastRestoredSession = sessions.find((s) => s.has_graph);
+
+  const compressionAvg =
+    chartData.length > 0
+      ? (() => {
+          const valid = chartData.filter((d) => d.tokens_raw > 0);
+          if (valid.length === 0) return null;
+          const avg =
+            valid.reduce(
+              (acc, d) => acc + (1 - d.tokens_sent / d.tokens_raw),
+              0,
+            ) / valid.length;
+          return Math.round(avg * 100);
+        })()
+      : null;
 
   return (
-    <main className="mx-auto max-w-5xl px-8 py-10">
-      {/* ── Header ─────────────────────────────────────── */}
-      <header className="flex items-center justify-between border-b border-border pb-4">
-        <h1 className="text-xl font-semibold tracking-tight">SessionGraph</h1>
-        <div className="flex items-center gap-2 text-sm">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${connected ? "bg-success" : "bg-text-secondary"}`}
-          />
-          <span className="text-text-secondary">
-            {connected ? "Proxy Active" : "Connecting…"}
+    <main className="mx-auto max-w-5xl px-6 py-6 flex flex-col gap-5">
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <header className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/15">
+            <span className="text-accent text-xs font-bold">S</span>
+          </div>
+          <span className="text-sm font-semibold tracking-tight text-text-primary">
+            SessionGraph
           </span>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                connected ? "bg-success animate-pulse" : "bg-text-secondary/30"
+              }`}
+            />
+            <span className="text-xs text-text-secondary">
+              {connected ? `Proxy on :${port}` : "Connecting…"}
+            </span>
+          </div>
         </div>
       </header>
 
-      {/* ── Today stat cards ──────────────────────────── */}
-      <section className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatCard
-          label="Saved Today"
-          value={today ? fmtUsd(today.cost_saved_usd) : "—"}
-          sub={today ? fmtTokens(today.tokens_saved) + " tokens" : undefined}
-          accent="success"
-        />
-        <StatCard
-          label="Compression"
-          value={
-              activeSessions.length > 0 && activeSessions.some(s => s.tokens_in_raw > 0)
-                ? (() => {
-                    const valid = activeSessions.filter(s => s.tokens_in_raw > 0);
-                    const avg = valid.reduce((a, s) => a + s.compression_ratio, 0) / valid.length;
-                    return `${((1 - avg) * 100).toFixed(0)}%`;
-                  })()
-              : "—"
-          }
-          sub={activeSessions.length > 0 ? "avg ratio" : undefined}
-        />
-        <StatCard
-          label="Requests"
-          value={today ? String(today.requests) : "—"}
-          sub={today ? fmtCount(today.tokens_saved > 0 ? today.sessions : 0, "session") : undefined}
-        />
-      </section>
-
-      {/* ── Monthly savings bar ──────────────────────── */}
-      <section className="mt-8 rounded-lg border border-border bg-surface p-5">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-text-secondary">THIS MONTH</span>
-          <span className="font-medium text-success">
-            {total ? fmtUsd(total.cost_saved_usd) + " saved" : "—"}
-          </span>
+      {/* ── Active session banner ────────────────────────────────────────── */}
+      {activeSessions.length > 0 && (
+        <div className="space-y-1.5">
+          {activeSessions.map((s) => {
+            const saving =
+              s.tokens_in_raw > 0
+                ? `${((1 - s.compression_ratio) * 100).toFixed(0)}% compression`
+                : "intercepting…";
+            const providerColor =
+              s.provider === "anthropic"
+                ? "border-amber-400/25 bg-amber-400/8 text-amber-400"
+                : s.provider === "openrouter"
+                  ? "border-purple-400/25 bg-purple-400/8 text-purple-400"
+                  : "border-emerald-400/25 bg-emerald-400/8 text-emerald-400";
+            return (
+              <div
+                key={s.id}
+                className={`flex items-center justify-between rounded-lg border px-4 py-2.5 ${providerColor}`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse shrink-0" />
+                  <span className="text-sm font-medium truncate">
+                    {s.project_name ?? `session ${s.id.slice(0, 6)}`}
+                  </span>
+                  {s.tokens_in_sent > 0 && (
+                    <span className="text-xs opacity-60 hidden sm:inline">
+                      {fmtTokens(s.tokens_in_sent)} sent
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs font-medium shrink-0">{saving}</span>
+              </div>
+            );
+          })}
         </div>
-        {total && total.tokens_saved > 0 ? (
-          <div className="mt-3 h-2 w-full rounded-full bg-border">
-            <div
-              className="h-2 rounded-full bg-success transition-all duration-700"
-              style={{
-                width: `${Math.min(
-                  (total.cost_saved_usd / (total.cost_saved_usd + 5)) * 100,
-                  100,
-                )}%`,
-              }}
-            />
+      )}
+
+      {/* ── Two-panel stat area ──────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-4">
+        {/* Left: Token Savings */}
+        <div className="rounded-lg border border-border bg-surface p-5 flex flex-col gap-4">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/60 mb-3">
+              Token Savings
+            </p>
+            {hasActivity ? (
+              <div className="flex items-end gap-5 flex-wrap">
+                <div>
+                  <p className="text-2xl font-semibold tabular-nums text-success">
+                    {fmtUsd(today!.cost_saved_usd)}
+                  </p>
+                  <p className="text-xs text-text-secondary mt-0.5">saved today</p>
+                </div>
+                {compressionAvg !== null && (
+                  <div>
+                    <p className="text-2xl font-semibold tabular-nums text-text-primary">
+                      {compressionAvg}%
+                    </p>
+                    <p className="text-xs text-text-secondary mt-0.5">compression avg</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-2xl font-semibold tabular-nums text-text-primary">
+                    {today!.requests}
+                  </p>
+                  <p className="text-xs text-text-secondary mt-0.5">
+                    {today!.requests === 1 ? "request" : "requests"}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-text-secondary/50">
+                No requests yet — point your AI tool at{" "}
+                <code className="font-mono text-accent text-xs">
+                  localhost:{port}
+                </code>
+              </p>
+            )}
           </div>
-        ) : (
-          <p className="mt-2 text-xs text-text-secondary">
-            Start coding — savings will appear here as requests flow through the proxy.
-          </p>
-        )}
-      </section>
 
-      {/* ── Live sessions ───────────────────────────── */}
-      {stats?.active_sessions && stats.active_sessions.length > 0 && (
-        <section className="mt-6 space-y-3">
-          <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-            Live {stats.active_sessions.length === 1 ? "Session" : "Sessions"}
-          </span>
-          {stats.active_sessions.map((s) => (
-            <div key={s.id} className="rounded-lg border border-border bg-surface p-5">
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`inline-block h-2 w-2 rounded-full ${s.provider === "anthropic" ? "bg-amber-400" : "bg-accent"}`} />
-                <span className="text-xs font-medium text-text-primary">
-                  {s.project_name ?? s.id.slice(0, 8)}
-                </span>
-                <span className="text-xs text-text-secondary">
-                  · {s.provider}
-                </span>
+          {/* Sparkline */}
+          <div className="flex-1">
+            {chartData.some((d) => d.tokens_raw > 0) ? (
+              <SparklineChart data={chartData} />
+            ) : (
+              <div className="h-16 flex items-center">
+                <p className="text-xs text-text-secondary/40">
+                  Chart appears after first requests
+                </p>
               </div>
-              <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            )}
+          </div>
+
+          {hasTotal && (
+            <p className="text-xs text-text-secondary/50 tabular-nums">
+              {fmtUsd(total!.cost_saved_usd)} saved across {total!.sessions}{" "}
+              {total!.sessions === 1 ? "session" : "sessions"} total
+            </p>
+          )}
+        </div>
+
+        {/* Right: Session Memory */}
+        <div className="rounded-lg border border-border bg-surface p-5 flex flex-col gap-3">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/60">
+            Session Memory
+          </p>
+
+          {sessionsWithGraphs > 0 ? (
+            <>
+              <div className="flex items-end gap-5 flex-wrap">
                 <div>
-                  <p className="text-text-secondary">Session</p>
-                  <p className="font-mono text-xs text-text-primary">
-                    {s.id.slice(0, 8)}…
+                  <p className="text-2xl font-semibold tabular-nums text-text-primary">
+                    {sessionsWithGraphs}
+                  </p>
+                  <p className="text-xs text-text-secondary mt-0.5">
+                    {sessionsWithGraphs === 1 ? "session" : "sessions"} restored
                   </p>
                 </div>
-                <div>
-                  <p className="text-text-secondary">Tokens Sent</p>
-                  <p className="text-text-primary">{fmtTokens(s.tokens_in_sent)}</p>
-                </div>
-                <div>
-                  <p className="text-text-secondary">Raw Would Be</p>
-                  <p className="text-text-primary">{fmtTokens(s.tokens_in_raw)}</p>
-                </div>
-                <div>
-                  <p className="text-text-secondary">Saving</p>
-                  <p className="text-success">
-                    {s.tokens_in_raw > 0
-                      ? `${((1 - s.compression_ratio) * 100).toFixed(0)}%`
-                      : "—"}
+                {projectsWithMemory > 0 && (
+                  <div>
+                    <p className="text-2xl font-semibold tabular-nums text-text-primary">
+                      {projectsWithMemory}
+                    </p>
+                    <p className="text-xs text-text-secondary mt-0.5">
+                      {projectsWithMemory === 1 ? "project" : "projects"} with memory
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-border pt-3 space-y-1">
+                <p className="text-xs text-text-secondary/70">
+                  Context rebuild saved:
+                </p>
+                <p className="text-sm font-medium text-text-primary tabular-nums">
+                  ~{fmtTokens(Math.round(memoryTokensSaved))} tokens this month
+                </p>
+                <p className="text-xs text-success tabular-nums">
+                  ≈ {fmtUsd(memoryCostSaved)}
+                </p>
+              </div>
+
+              {lastRestoredSession && (
+                <div className="border-t border-border pt-3">
+                  <p className="text-xs text-text-secondary/70 mb-1">Last restored:</p>
+                  <p className="text-sm font-medium text-text-primary truncate">
+                    {lastRestoredSession.project_name ??
+                      lastRestoredSession.project_hash.slice(0, 8)}
+                    <span className="text-text-secondary/60 font-normal">
+                      {" "}· {fmtRelative(lastRestoredSession.started_at)}
+                    </span>
                   </p>
                 </div>
-              </div>
-            </div>
-          ))}
-        </section>
-      )}
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-text-secondary/50 leading-relaxed">
+              No session graphs yet. The proxy extracts context automatically
+              as you code.
+            </p>
+          )}
+        </div>
+      </div>
 
-      {/* ── Empty state ──────────────────────────────── */}
-      {(!stats?.active_sessions || stats.active_sessions.length === 0) && (
-        <section className="mt-8 text-center">
-          <p className="text-text-secondary">
-            No active session detected. Point your AI coding tool at
-            <code className="mx-1 rounded bg-surface px-1.5 py-0.5 text-sm text-accent">
-              http://localhost:{proxyStatus?.port ?? 4200}
-            </code>
-            and start a conversation.
-          </p>
-          <p className="mt-1 text-xs text-text-secondary">
-            Set <code className="rounded bg-surface px-1 py-0.5 text-xs">ANTHROPIC_BASE_URL</code>
-            {" "}or{" "}
-            <code className="rounded bg-surface px-1 py-0.5 text-xs">OPENAI_BASE_URL</code>
-            {" "}to the proxy address.
-          </p>
-        </section>
-      )}
-
-      {/* ── 7-day token usage chart ────────────────── */}
-      {chartData.length > 0 && (
-        <section className="mt-8 rounded-lg border border-border bg-surface p-5">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-4">
-            Token Usage — Last 7 Days
-          </h3>
-          <TokenChart data={chartData} />
-        </section>
-      )}
-
+      {/* ── Session list + detail ─────────────────────────────────────────── */}
       <SessionList />
       <SessionDetail />
     </main>
   );
 }
 
-// ── Stat card ──────────────────────────────────────────────────
+// ── Sparkline area chart — compression ratio over 7 days ──────────────────
 
-function StatCard({
-  label,
-  value,
-  sub,
-  accent,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  accent?: "success" | "accent";
-}) {
-  const valueColor =
-    accent === "success"
-      ? "text-success"
-      : accent === "accent"
-        ? "text-accent"
-        : "text-text-primary";
+function SparklineChart({ data }: { data: DailyTokenUsage[] }) {
+  const height = 64;
+  const width = 100;
+  const pts = data.map((d, i) => {
+    const ratio = d.tokens_raw > 0 ? 1 - d.tokens_sent / d.tokens_raw : 0;
+    const x = (i / (data.length - 1)) * width;
+    const y = height - ratio * height;
+    return { x, y, ratio, label: d.date.slice(5) };
+  });
+
+  const lastPt = pts[pts.length - 1];
+  const pathD =
+    pts
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+      .join(" ") +
+    (lastPt ? ` L ${lastPt.x} ${height} L 0 ${height} Z` : "");
+
+  const linePath = pts
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+    .join(" ");
 
   return (
-    <div className="rounded-lg border border-border bg-surface p-5">
-      <p className="text-xs font-medium uppercase tracking-wider text-text-secondary">
-        {label}
-      </p>
-      <p className={`mt-2 text-2xl font-semibold ${valueColor}`}>{value}</p>
-      {sub && <p className="mt-1 text-xs text-text-secondary">{sub}</p>}
+    <div className="space-y-1">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full"
+        style={{ height }}
+        preserveAspectRatio="none"
+      >
+        <defs>
+          <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--color-success)" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="var(--color-success)" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <path d={pathD} fill="url(#sparkGrad)" />
+        <path
+          d={linePath}
+          fill="none"
+          stroke="var(--color-success)"
+          strokeWidth="1.5"
+          vectorEffect="non-scaling-stroke"
+        />
+        {pts.map((p, i) => (
+          <circle
+            key={i}
+            cx={p.x}
+            cy={p.y}
+            r="1.5"
+            fill="var(--color-success)"
+            opacity={p.ratio > 0 ? 1 : 0}
+            vectorEffect="non-scaling-stroke"
+          >
+            <title>{`${p.label}: ${(p.ratio * 100).toFixed(0)}% compression`}</title>
+          </circle>
+        ))}
+      </svg>
+      <div className="flex justify-between">
+        {data.map((d) => (
+          <span key={d.date} className="text-[9px] text-text-secondary/40 tabular-nums">
+            {d.date.slice(5)}
+          </span>
+        ))}
+      </div>
     </div>
-  );
-}
-
-// ── Token usage bar chart (inline SVG) ────────────────────────────
-
-function TokenChart({ data }: { data: DailyTokenUsage[] }) {
-  const maxTokens = Math.max(...data.map((d) => Math.max(d.tokens_raw, d.tokens_sent)), 1);
-  const w = 500;
-  const h = 140;
-  const barW = Math.max(8, Math.floor((w - 40) / data.length / 2) - 2);
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
-      {data.map((d, i) => {
-        const xRaw = 30 + i * (barW * 2 + 6);
-        const xSent = xRaw + barW + 2;
-        const hRaw = Math.max(2, (d.tokens_raw / maxTokens) * (h - 24));
-        const hSent = Math.max(2, (d.tokens_sent / maxTokens) * (h - 24));
-
-        return (
-          <g key={d.date}>
-            <rect
-              x={xRaw}
-              y={h - hRaw - 14}
-              width={barW}
-              height={hRaw}
-              fill="#71717a"
-              rx={1}
-            >
-              <title>Raw: {fmtTokens(d.tokens_raw)}</title>
-            </rect>
-            <rect
-              x={xSent}
-              y={h - hSent - 14}
-              width={barW}
-              height={hSent}
-              fill="#22c55e"
-              rx={1}
-            >
-              <title>Sent: {fmtTokens(d.tokens_sent)}</title>
-            </rect>
-            <text
-              x={xRaw + barW}
-              y={h - 2}
-              textAnchor="middle"
-              className="fill-text-secondary"
-              fontSize="9"
-            >
-              {d.date.slice(5)}
-            </text>
-          </g>
-        );
-      })}
-      {/* Legend */}
-      <rect x={30} y={2} width={8} height={8} fill="#71717a" rx={1} />
-      <text x={42} y={10} className="fill-text-secondary" fontSize="9">Raw</text>
-      <rect x={70} y={2} width={8} height={8} fill="#22c55e" rx={1} />
-      <text x={82} y={10} className="fill-text-secondary" fontSize="9">Compressed</text>
-    </svg>
   );
 }

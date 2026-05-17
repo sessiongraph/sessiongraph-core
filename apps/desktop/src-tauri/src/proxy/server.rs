@@ -8,16 +8,20 @@
 //! - `GET  /stats`                — live stats for dashboard
 //! - `GET  /sessions/:project_hash/graph` — session graph by project
 
+use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use axum::extract::{Path, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use tokio::net::TcpListener;
+use tower::Service;
 use tower_http::cors::CorsLayer;
 
 use super::intercept::{self, InterceptState};
@@ -31,6 +35,8 @@ async fn anthropic_handler(
     headers: HeaderMap,
     body: Json<serde_json::Value>,
 ) -> Response {
+    let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("-");
+    tracing::info!("→ POST /v1/messages  ua={}", ua);
     match intercept::handle_anthropic(&state, &headers, body.0).await {
         Ok(response) => response,
         Err(e) => e.into_response(),
@@ -44,6 +50,10 @@ async fn openai_handler(
     headers: HeaderMap,
     body: Json<serde_json::Value>,
 ) -> Response {
+    let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("-");
+    let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("-");
+    tracing::info!("→ POST /v1/chat/completions  ua={}  model={}", ua, model);
+
     // Allow overriding the upstream base URL via header (for local models, etc.)
     let base_url = headers
         .get("x-upstream-base-url")
@@ -237,7 +247,6 @@ async fn session_graph_handler(
 
     match result {
         Ok(Some(graph_json)) => {
-            // Parse and return the JSON with proper content-type
             match serde_json::from_str::<serde_json::Value>(&graph_json) {
                 Ok(parsed) => Json(parsed).into_response(),
                 Err(e) => {
@@ -266,23 +275,55 @@ async fn session_graph_handler(
     }
 }
 
-// ── CONNECT tunneling (HTTPS proxy support) ──────────────────────────────
+// ── CONNECT proxy service ─────────────────────────────────────────────────
+//
+// CONNECT must be handled at the hyper Service level, not inside an axum
+// handler.  axum wraps the request body which can lose the OnUpgrade extension
+// that hyper sets on incoming requests.  By intercepting CONNECT before the
+// request reaches the axum Router we guarantee the upgrade future is intact.
 
-/// Handle CONNECT tunneling for HTTPS proxy traffic.
-/// If MITM interception is available, performs TLS interception so the proxy
-/// can inspect/modify the HTTP traffic inside. Otherwise falls back to a raw
-/// TCP tunnel (bytes relayed, no inspection possible).
-/// CRITICAL: does NOT await `hyper::upgrade::on(req)` in the handler — the
-/// upgrade future can only resolve AFTER the 200 OK response is returned.
-async fn connect_handler(State(state): State<Arc<InterceptState>>, req: Request) -> Response {
+/// Hyper service that intercepts CONNECT before forwarding to the axum Router.
+#[derive(Clone)]
+struct ProxyService {
+    state: Arc<InterceptState>,
+    inner: axum::routing::RouterIntoService<axum::body::Body>,
+}
+
+impl hyper::service::Service<Request<hyper::body::Incoming>> for ProxyService {
+    type Response = Response<axum::body::Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn call(&self, req: Request<hyper::body::Incoming>) -> Self::Future {
+        if req.method() == Method::CONNECT {
+            let state = self.state.clone();
+            Box::pin(async move { Ok(handle_connect_hyper(req, state).await) })
+        } else {
+            let (parts, body) = req.into_parts();
+            let body = axum::body::Body::new(body);
+            let req = Request::from_parts(parts, body);
+            let mut inner = self.inner.clone();
+            Box::pin(async move { inner.call(req).await })
+        }
+    }
+}
+
+/// Handle a CONNECT request at the hyper service level so the OnUpgrade
+/// extension is guaranteed to be present (not lost through axum rewrapping).
+async fn handle_connect_hyper(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<InterceptState>,
+) -> Response<axum::body::Body> {
     let host_port = req.uri().to_string();
-
     let (host, port) = match host_port.rsplit_once(':') {
         Some((h, p)) => match p.parse::<u16>() {
             Ok(port) => (h.to_string(), port),
             Err(_) => {
                 tracing::warn!("CONNECT invalid port: {}", p);
-                return (StatusCode::BAD_REQUEST, "Invalid port").into_response();
+                return axum::http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(axum::body::Body::from("Invalid port"))
+                    .unwrap();
             }
         },
         None => (host_port.clone(), 443),
@@ -292,7 +333,6 @@ async fn connect_handler(State(state): State<Arc<InterceptState>>, req: Request)
 
     let upgrade = hyper::upgrade::on(req);
     let mitm = state.mitm.clone();
-    let intercept = state.clone();
 
     tokio::spawn(async move {
         let upgraded = match upgrade.await {
@@ -304,21 +344,48 @@ async fn connect_handler(State(state): State<Arc<InterceptState>>, req: Request)
         };
 
         if let Some(mitm) = mitm {
-            tracing::debug!("MITM intercept for {host}:{port}");
-            mitm::handle_connect(upgraded, &host, port, intercept, mitm).await;
-        } else {
-            tracing::debug!("Tunnel passthrough for {host}:{port}");
-            if let Err(e) = tunnel(upgraded, &host, port).await {
-                tracing::debug!("Tunnel to {host}:{port} closed: {e}");
+            if is_intercept_host(&host) {
+                tracing::debug!("CONNECT: MITM intercept for {host}:{port}");
+                mitm::handle_connect(upgraded, &host, port, state, mitm).await;
+                return;
             }
+        }
+        // All other hosts get a transparent TCP tunnel.
+        tracing::debug!("CONNECT: tunnel passthrough for {host}:{port}");
+        if let Err(e) = tunnel(upgraded, &host, port).await {
+            tracing::debug!("Tunnel to {host}:{port} closed: {e}");
         }
     });
 
-    StatusCode::OK.into_response()
+    // 200 Connection Established — no body, no content-length
+    axum::http::Response::builder()
+        .status(StatusCode::OK)
+        .body(axum::body::Body::empty())
+        .unwrap()
 }
 
-/// Relay bytes bidirectionally between the upgraded connection and the
-/// upstream server (plain TCP tunnel — used as fallback until MITM is ready).
+/// Returns true if this host should be MITM-intercepted (TLS termination).
+///
+/// Only MITM hosts where tools cannot set a plain-HTTP base URL and MUST
+/// go through HTTPS_PROXY. Tools that support ANTHROPIC_BASE_URL /
+/// OPENAI_BASE_URL already send plain HTTP to port 4200 — no MITM needed.
+///
+/// We MITM api.anthropic.com because claude-code uses it via HTTPS_PROXY
+/// when ANTHROPIC_BASE_URL is not set, and its Node.js TLS stack accepts
+/// our installed CA cert. We do NOT MITM openrouter.ai, api.openai.com,
+/// or any other host because Cursor/Windsurf/opencode use plain HTTP via
+/// the OPENAI_BASE_URL/ANTHROPIC_BASE_URL env vars — CONNECT to those
+/// hosts comes from other background traffic that we should not intercept.
+fn is_intercept_host(host: &str) -> bool {
+    let h = host.trim_start_matches("www.");
+    // Only intercept the Anthropic API — everything else uses plain HTTP
+    // via the base URL env vars, so CONNECT to those hosts is background
+    // traffic (updates, analytics) that must not be MITMed.
+    h == "api.anthropic.com" || h.ends_with(".anthropic.com")
+}
+
+/// Relay bytes bidirectionally between upgraded connection and upstream TCP.
+/// Used as fallback when MITM is disabled.
 async fn tunnel(
     upgraded: hyper::upgrade::Upgraded,
     host: &str,
@@ -330,21 +397,9 @@ async fn tunnel(
     Ok(())
 }
 
-// ── Fallback handler ──────────────────────────────────────────────────────
-
-/// Catch-all that routes CONNECT requests to the tunnel handler and returns
-/// 404 for everything else.
-async fn fallback_handler(State(state): State<Arc<InterceptState>>, req: Request) -> Response {
-    if req.method() == Method::CONNECT {
-        connect_handler(State(state), req).await
-    } else {
-        (StatusCode::NOT_FOUND, "Not Found").into_response()
-    }
-}
-
 // ── Server startup ────────────────────────────────────────────────────────
 
-/// Build the Axum router.
+/// Build the Axum router (handles everything except CONNECT).
 fn build_router(state: Arc<InterceptState>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
@@ -354,7 +409,6 @@ fn build_router(state: Arc<InterceptState>) -> Router {
         .route("/v1/chat/completions", post(openai_handler))
         .route("/sessions/:project_hash/graph", get(session_graph_handler))
         .layer(CorsLayer::permissive())
-        .fallback(fallback_handler)
         .with_state(state)
 }
 
@@ -366,7 +420,6 @@ pub async fn start(
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-    let router = build_router(state.clone());
 
     tracing::info!("Proxy server starting on http://{}", addr);
 
@@ -379,24 +432,70 @@ pub async fn start(
     };
 
     // Create a channel for restart signals and store it in state
-    let (restart_tx, mut restart_rx) = tokio::sync::oneshot::channel();
+    let (restart_tx, restart_rx) = tokio::sync::oneshot::channel();
     {
         let mut tx = state.restart_tx.lock().await;
         *tx = Some(restart_tx);
     }
 
-    // Run the server with graceful shutdown that also handles restart
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = shutdown => {
-                    tracing::info!("Proxy server shutting down");
-                }
-                _ = &mut restart_rx => {
-                    tracing::info!("Proxy server received restart signal");
+    let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_flag2 = shutdown_flag.clone();
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = shutdown => {
+                tracing::info!("Proxy server shutting down");
+            }
+            _ = restart_rx => {
+                tracing::info!("Proxy server received restart signal");
+            }
+        }
+        shutdown_flag2.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    // Manual accept loop — required for HTTP upgrade (CONNECT) support.
+    // We use HTTP/1.1 only; CONNECT tunneling is an HTTP/1.1 mechanism.
+    loop {
+        if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+
+        let accept = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            listener.accept(),
+        )
+        .await;
+
+        let (stream, _peer) = match accept {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::error!("Accept error: {}", e);
+                continue;
+            }
+            Err(_elapsed) => continue,
+        };
+
+        let router = build_router(state.clone());
+        let service = ProxyService {
+            state: state.clone(),
+            inner: router.into_service(),
+        };
+
+        tokio::spawn(async move {
+            let io = hyper_util::rt::TokioIo::new(stream);
+            if let Err(e) = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, service)
+                .with_upgrades()
+                .await
+            {
+                let msg = e.to_string().to_lowercase();
+                if !msg.contains("reset")
+                    && !msg.contains("broken pipe")
+                    && !msg.contains("connection closed")
+                {
+                    tracing::debug!("Connection error: {}", e);
                 }
             }
-        })
-        .await
-        .unwrap_or_else(|e| tracing::error!("Proxy server error: {}", e));
+        });
+    }
 }

@@ -16,13 +16,46 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("SESSIONGRAPH_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Install rustls crypto provider process-wide before any TLS work.
+    // Required by tokio-rustls; panics without it when multiple crates
+    // pull in rustls with no default provider selected.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Initialize logging — write to both stderr and a file so we can tail it.
+    let log_path = {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".into());
+        std::path::PathBuf::from(home).join(".sessiongraph").join("proxy.log")
+    };
+    let _ = std::fs::create_dir_all(log_path.parent().unwrap());
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+
+    let filter = tracing_subscriber::EnvFilter::try_from_env("SESSIONGRAPH_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("sessiongraph_desktop_lib=debug"));
+
+    use tracing_subscriber::prelude::*;
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    if let Some(file) = log_file {
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file));
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr_layer)
+            .init();
+    }
+    eprintln!("Proxy log: {}", log_path.display());
 
     // Initialize the database
     let conn = db::init_db().expect("Failed to initialize SessionGraph database");

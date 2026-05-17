@@ -110,6 +110,7 @@ fn cli_snippet(port: u16) -> String {
              \x20 if ($sgResponse.StatusCode -eq 200) {{\n\
              \x20\x20   $env:ANTHROPIC_BASE_URL = $sgProxyUrl\n\
              \x20\x20   $env:OPENAI_BASE_URL = \"$sgProxyUrl/v1\"\n\
+             \x20\x20   $env:CODEX_OSS_BASE_URL = $sgProxyUrl\n\
              \x20 }}\n\
              }} catch {{ }}\n"
         )
@@ -119,6 +120,7 @@ fn cli_snippet(port: u16) -> String {
              if curl -sf http://localhost:{port}/health > /dev/null 2>&1; then\n\
              \x20 export ANTHROPIC_BASE_URL=http://localhost:{port}\n\
              \x20 export OPENAI_BASE_URL=http://localhost:{port}/v1\n\
+             \x20 export CODEX_OSS_BASE_URL=http://localhost:{port}\n\
              fi\n"
         )
     }
@@ -134,15 +136,42 @@ pub fn set_proxy_env_vars(port: u16) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let proxy_url = format!("http://localhost:{port}");
-    let proxy_str = proxy_url.as_str();
     let openai_url = format!("http://localhost:{port}/v1");
-    let openai_str = openai_url.as_str();
+
+    // Path to our MITM CA cert — Bun/Node.js tools read NODE_EXTRA_CA_CERTS
+    // to trust additional certificates, which makes HTTPS_PROXY MITM work.
+    let ca_cert_path = {
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        format!("{}\\{}", home, ".sessiongraph\\mitm-ca.crt")
+    };
+
+    // HTTPS_PROXY / HTTP_PROXY intentionally NOT set here.
+    // Bun (opencode) applies HTTPS_PROXY globally, including to the Anthropic SDK,
+    // which causes it to CONNECT to api.anthropic.com even when provider.baseURL
+    // is set to our localhost address. Tools that can't read env vars get their own
+    // config files (see write_opencode_config). Tools that DO read ANTHROPIC_BASE_URL
+    // (claude-code) use that directly without needing HTTPS_PROXY.
+    // SSL_CERT_FILE intentionally NOT set: it replaces the entire system CA bundle,
+    // breaking TLS verification for all other hosts (e.g. Codex → api.openai.com).
+    // NODE_EXTRA_CA_CERTS correctly ADDS our cert to the existing bundle.
+    //
+    // CODEX_OSS_BASE_URL: OpenAI Codex CLI (Rust binary) reads this env var instead
+    // of OPENAI_BASE_URL to override the upstream API base URL.
+    let codex_url = format!("http://localhost:{port}");
     let pairs: [(&str, &str); 4] = [
-        ("ANTHROPIC_BASE_URL", proxy_str),
-        ("OPENAI_BASE_URL", openai_str),
-        ("HTTPS_PROXY", proxy_str),
-        ("HTTP_PROXY", proxy_str),
+        ("ANTHROPIC_BASE_URL", &proxy_url),
+        ("OPENAI_BASE_URL", &openai_url),
+        ("CODEX_OSS_BASE_URL", &codex_url),
+        ("NODE_EXTRA_CA_CERTS", &ca_cert_path),
     ];
+
+    // Set in current process so child processes spawned from any shell
+    // that launched us also inherit the vars immediately.
+    for (name, value) in &pairs {
+        std::env::set_var(name, value);
+    }
+
+    // Persist to HKCU\Environment via setx so newly opened terminals inherit them.
     let mut ok = true;
     for (name, value) in &pairs {
         let status = std::process::Command::new("setx")
@@ -154,22 +183,133 @@ pub fn set_proxy_env_vars(port: u16) {
         match status {
             Ok(s) if s.success() => {}
             Ok(s) => {
-                tracing::warn!(
-                    "setx {name}={value} failed with exit code {}",
-                    s.code().unwrap_or(-1)
-                );
+                tracing::warn!("setx {name}={value} failed: exit {}", s.code().unwrap_or(-1));
                 ok = false;
             }
             Err(e) => {
-                tracing::warn!("setx {name}={value} could not be launched: {e}");
+                tracing::warn!("setx {name}={value} error: {e}");
                 ok = false;
             }
         }
     }
+
+    // Broadcast WM_SETTINGCHANGE so Explorer and already-open terminals
+    // pick up the new HKCU env vars without needing a logoff.
+    broadcast_env_change();
+
+    // Write tool-specific config files so tools that ignore env vars
+    // still get redirected to the proxy via their own config mechanism.
+    write_opencode_config(port);
+
     if ok {
         tracing::info!("Proxy env vars set for port {port}");
     }
 }
+
+/// Inject provider baseURL overrides into ~/.config/opencode/opencode.json.
+/// Merges our settings into the user's existing config rather than replacing it.
+/// Uses a "_sessiongraph" marker key to track our managed entries so we can
+/// remove them cleanly without touching user settings.
+fn write_opencode_config(port: u16) {
+    let config_path = match opencode_config_path() {
+        Some(p) => p,
+        None => return,
+    };
+
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Load existing config (or start fresh).
+    let mut config: serde_json::Value = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let base = format!("http://localhost:{port}/v1");
+    let provider_obj = serde_json::json!({
+        "anthropic": { "options": { "baseURL": base } },
+        "openai":    { "options": { "baseURL": base } },
+        "openrouter":{ "options": { "baseURL": base } }
+    });
+
+    // Merge our provider entries into whatever the user has.
+    // We use a comment in the $schema value as a marker so we can clean up
+    // later — opencode validates JSON but ignores unknown $schema values.
+    // Tracking key: we store our proxy port in the provider baseURL itself,
+    // so we can detect and remove our entries on shutdown.
+    if let Some(obj) = config.as_object_mut() {
+        let provider = obj
+            .entry("provider")
+            .or_insert_with(|| serde_json::json!({}));
+        if let (Some(p), Some(new)) = (provider.as_object_mut(), provider_obj.as_object()) {
+            for (k, v) in new {
+                p.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    match std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+        Ok(_) => tracing::info!("opencode config written to {}", config_path.display()),
+        Err(e) => tracing::warn!("Failed to write opencode config: {e}"),
+    }
+}
+
+/// Return the path opencode uses for its config file.
+/// Follows XDG: $XDG_CONFIG_HOME/opencode/opencode.json, else ~/.config/opencode/opencode.json
+fn opencode_config_path() -> Option<std::path::PathBuf> {
+    let config_base = std::env::var("XDG_CONFIG_HOME").ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let home = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .ok()?;
+            Some(std::path::PathBuf::from(home).join(".config"))
+        })?;
+    Some(config_base.join("opencode").join("opencode.json"))
+}
+
+/// Broadcast WM_SETTINGCHANGE with "Environment" so Windows shells and
+/// apps that listen for env changes (Explorer, ConEmu, etc.) reload env vars.
+fn broadcast_env_change() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    // HWND_BROADCAST = 0xFFFF, WM_SETTINGCHANGE = 0x001A, SMTO_ABORTIFHUNG = 0x0002
+    let env_wide: Vec<u16> = OsStr::new("Environment\0").encode_wide().collect();
+    unsafe {
+        windows_broadcast_setting_change(env_wide.as_ptr());
+    }
+}
+
+#[cfg(windows)]
+unsafe fn windows_broadcast_setting_change(env_ptr: *const u16) {
+    // Use SendMessageTimeoutW via raw FFI — no winapi crate needed.
+    #[link(name = "user32")]
+    extern "system" {
+        fn SendMessageTimeoutW(
+            hwnd: isize,
+            msg: u32,
+            wparam: usize,
+            lparam: isize,
+            flags: u32,
+            timeout: u32,
+            result: *mut usize,
+        ) -> isize;
+    }
+    let mut result: usize = 0;
+    SendMessageTimeoutW(
+        0xFFFF_isize,   // HWND_BROADCAST
+        0x001A,         // WM_SETTINGCHANGE
+        0,
+        env_ptr as isize,
+        0x0002,         // SMTO_ABORTIFHUNG
+        1000,
+        &mut result,
+    );
+}
+
+#[cfg(not(windows))]
+unsafe fn windows_broadcast_setting_change(_env_ptr: *const u16) {}
 
 /// Remove persistent user env vars for the proxy.
 /// Called when proxy stops so new processes fall back to direct connection.
@@ -182,8 +322,11 @@ pub fn remove_proxy_env_vars() {
     let names = [
         "ANTHROPIC_BASE_URL",
         "OPENAI_BASE_URL",
+        "CODEX_OSS_BASE_URL",
         "HTTPS_PROXY",
         "HTTP_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
     ];
     for name in &names {
         let status = std::process::Command::new("reg")
@@ -205,6 +348,43 @@ pub fn remove_proxy_env_vars() {
             }
         }
     }
+    // Remove our provider overrides from opencode config (keep user settings intact).
+    // We identify our entries by the localhost baseURL we injected.
+    if let Some(config_path) = opencode_config_path() {
+        if let Ok(text) = std::fs::read_to_string(&config_path) {
+            if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(obj) = config.as_object_mut() {
+                    let mut changed = false;
+                    if let Some(provider) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
+                        for key in &["anthropic", "openai", "openrouter"] {
+                            let is_ours = provider.get(*key)
+                                .and_then(|v| v.get("options"))
+                                .and_then(|o| o.get("baseURL"))
+                                .and_then(|u| u.as_str())
+                                .map(|u| u.contains("localhost"))
+                                .unwrap_or(false);
+                            if is_ours {
+                                provider.remove(*key);
+                                changed = true;
+                            }
+                        }
+                        if provider.is_empty() {
+                            obj.remove("provider");
+                        }
+                    }
+                    if changed {
+                        let _ = std::fs::write(
+                            &config_path,
+                            serde_json::to_string_pretty(&config).unwrap_or_default(),
+                        );
+                        tracing::debug!("opencode provider overrides removed");
+                    }
+                }
+            }
+        }
+    }
+
+    broadcast_env_change();
     tracing::info!("Proxy env vars removed");
 }
 
@@ -437,12 +617,23 @@ pub fn write_pac_file(port: u16) -> Result<std::path::PathBuf, String> {
     // Falls back to DIRECT if the proxy is unavailable (app closed).
     if (shExpMatch(host, "api.anthropic.com") ||
         shExpMatch(host, "api.openai.com") ||
-        shExpMatch(host, "*.openai.com") ||
         shExpMatch(host, "openrouter.ai") ||
-        shExpMatch(host, "*.openrouter.ai") ||
+        shExpMatch(host, "api.openrouter.ai") ||
         shExpMatch(host, "api.deepseek.com") ||
         shExpMatch(host, "cloudcode-pa.googleapis.com") ||
-        shExpMatch(host, "generativelanguage.googleapis.com")) {{
+        shExpMatch(host, "generativelanguage.googleapis.com") ||
+        shExpMatch(host, "api.minimax.io") ||
+        shExpMatch(host, "api.minimax.chat") ||
+        shExpMatch(host, "dashscope.aliyuncs.com") ||
+        shExpMatch(host, "open.bigmodel.cn") ||
+        shExpMatch(host, "api.together.xyz") ||
+        shExpMatch(host, "api.together.ai") ||
+        shExpMatch(host, "api.mistral.ai") ||
+        shExpMatch(host, "api.groq.com") ||
+        shExpMatch(host, "api.cohere.com") ||
+        shExpMatch(host, "api.cohere.ai") ||
+        shExpMatch(host, "inference.ai.azure.com") ||
+        shExpMatch(host, "*.inference.ai.azure.com")) {{
         return "PROXY 127.0.0.1:{port}; DIRECT";
     }}
     return "DIRECT";

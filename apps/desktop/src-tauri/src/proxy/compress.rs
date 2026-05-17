@@ -155,17 +155,24 @@ fn ensure_wrapper_exists() -> Result<(), String> {
         &path,
         r#"import json, sys, pathlib
 
-# Read the input payload from a file path (first CLI arg) so the
-# request data never appears in the process command line.
+# Read the input JSON from a temp file (first CLI arg).
 input_file = pathlib.Path(sys.argv[1])
-payload = input_file.read_text()
+payload = json.loads(input_file.read_text(encoding='utf-8'))
 
-# Trick headroom's CLI argparser into reading from our variable
-sys.argv = ["compress", "--input-json", payload, "--mode", "token", "--output-json"]
+messages = payload["messages"]
+model = payload.get("model", "claude-sonnet-4-5-20250929")
 
-# Run headroom.compress.main() in the same process
-import headroom.compress as hc
-hc.main()
+from headroom import compress
+result = compress(messages, model=model)
+
+out = {
+    "messages": result.messages,
+    "tokens_before": result.tokens_before,
+    "tokens_after": result.tokens_after,
+    "tokens_saved": result.tokens_saved,
+    "compression_ratio": result.compression_ratio,
+}
+print(json.dumps(out))
 "#,
     )
     .map_err(|e| format!("Cannot write wrapper: {e}"))?;

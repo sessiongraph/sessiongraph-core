@@ -1,4 +1,17 @@
 # SessionGraph
+<div align="center">
+
+[![GitHub Release](https://img.shields.io/github/v/release/sessiongraph/sessiongraph-core?style=flat-square)](https://github.com/sessiongraph/sessiongraph-core/releases)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/sessiongraph/sessiongraph-core/ci.yml?style=flat-square)](https://github.com/sessiongraph/sessiongraph-core/actions)
+[![GitHub Downloads](https://img.shields.io/github/downloads/sessiongraph/sessiongraph-core/total?style=flat-square)](https://github.com/sessiongraph/sessiongraph-core/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/sessiongraph/sessiongraph-core?style=flat-square)](https://github.com/sessiongraph/sessiongraph-core/stargazers)
+[![MIT License](https://img.shields.io/github/license/sessiongraph/sessiongraph-core?style=flat-square)](https://github.com/sessiongraph/sessiongraph-core/blob/main/LICENSE)
+
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-FFC131?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
+[![Rust](https://img.shields.io/badge/Rust-1.77+-black?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+
+</div>
 
 > Your AI remembers where you left off.
 

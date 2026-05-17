@@ -1,0 +1,20 @@
+{
+  "name": "sessiongraph",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SessionGraph — Your AI remembers where you left off.",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @sessiongraph/desktop dev",
+    "build": "pnpm --filter @sessiongraph/desktop build",
+    "tauri": "pnpm --filter @sessiongraph/desktop tauri",
+    "tauri:dev": "pnpm --filter @sessiongraph/desktop tauri:dev",
+    "tauri:build": "pnpm --filter @sessiongraph/desktop tauri:build",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}

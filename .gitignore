@@ -1,0 +1,36 @@
+# Node
+node_modules/
+dist/
+.pnpm-store/
+
+# Build / cache
+.tsbuildinfo
+*.tsbuildinfo
+.cache/
+.vite/
+
+# Rust / Tauri
+target/
+**/target/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local SessionGraph data
+.sessiongraph/
+.sessiongraph-dev/

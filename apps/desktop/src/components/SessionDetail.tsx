@@ -1,12 +1,14 @@
 // SessionDetail — session graph viewer. See spec section 6.5.
 // Renders the structured graph as readable cards, not raw JSON.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useSessionsStore } from "../stores/sessions";
+import GraphViz from "./GraphViz";
 
 export default function SessionDetail() {
   const { selectedGraph, selectedProject, deleteGraph, fetchSessions } =
     useSessionsStore();
+  const [showGraph, setShowGraph] = useState(false);
 
   if (!selectedGraph) {
     return (
@@ -29,21 +31,33 @@ export default function SessionDetail() {
         <h2 className="text-sm font-semibold uppercase tracking-wider text-text-secondary">
           Session Graph
         </h2>
-        <button
-          onClick={handleDelete}
-          className="rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-red-400"
-        >
-          Delete graph
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowGraph(!showGraph)}
+            className="rounded px-2 py-1 text-xs text-accent transition-colors hover:bg-accent/10"
+          >
+            {showGraph ? "Card View" : "Graph View"}
+          </button>
+          <button
+            onClick={handleDelete}
+            className="rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-red-400"
+          >
+            Delete graph
+          </button>
+        </div>
       </div>
 
-      {/* State card */}
-      <GraphCard title="Work State">
-        <Field label="Current task" value={str(selectedGraph.state.current_task)} />
-        <Field label="Progress" value={str(selectedGraph.state.progress)} />
-        {renderList("Next steps", selectedGraph.state.next_steps)}
-        {renderList("Blockers", selectedGraph.state.blockers, "text-amber-400")}
-      </GraphCard>
+      {showGraph ? (
+        <GraphViz graph={selectedGraph} />
+      ) : (
+        <>
+          {/* State card */}
+          <GraphCard title="Work State">
+            <Field label="Current task" value={str(selectedGraph.state.current_task)} />
+            <Field label="Progress" value={str(selectedGraph.state.progress)} />
+            {renderList("Next steps", selectedGraph.state.next_steps)}
+            {renderList("Blockers", selectedGraph.state.blockers, "text-amber-400")}
+          </GraphCard>
 
       {/* Decisions card */}
       {arr(selectedGraph.decisions).length > 0 && (
@@ -113,6 +127,8 @@ export default function SessionDetail() {
         v{selectedGraph.sg_version} · {selectedGraph.token_count} tokens ·{" "}
         extracted {fmtDate(selectedGraph.created_at)}
       </p>
+        </>
+      )}
     </section>
   );
 }

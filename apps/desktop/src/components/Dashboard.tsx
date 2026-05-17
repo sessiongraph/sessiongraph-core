@@ -40,10 +40,14 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [fetchStats]);
 
-  // Fetch 7-day chart data
+  // Fetch 7-day chart data — only re-fetch when the day changes
   useEffect(() => {
-    void tauri.getTokenUsageChart(7).then(setChartData).catch(() => {});
-  }, [stats?.today?.requests]);
+    let cancelled = false;
+    void tauri.getTokenUsageChart(7).then((data) => {
+      if (!cancelled) setChartData(data);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [new Date().toISOString().slice(0, 10)]);
 
   const today = stats?.today;
   const total = stats?.total;
@@ -75,8 +79,12 @@ export default function Dashboard() {
         <StatCard
           label="Compression"
           value={
-            activeSessions.length > 0 && activeSessions.some(s => s.tokens_in_raw > 0)
-              ? `${((1 - activeSessions.reduce((a, s) => a + (s.tokens_in_raw > 0 ? s.compression_ratio : 1), 0) / activeSessions.length) * 100).toFixed(0)}%`
+              activeSessions.length > 0 && activeSessions.some(s => s.tokens_in_raw > 0)
+                ? (() => {
+                    const valid = activeSessions.filter(s => s.tokens_in_raw > 0);
+                    const avg = valid.reduce((a, s) => a + s.compression_ratio, 0) / valid.length;
+                    return `${((1 - avg) * 100).toFixed(0)}%`;
+                  })()
               : "—"
           }
           sub={activeSessions.length > 0 ? "avg ratio" : undefined}

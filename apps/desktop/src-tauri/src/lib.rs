@@ -39,8 +39,30 @@ pub fn run() {
         tracing::warn!("Failed to write PAC file: {}", e);
     }
 
+    // Clean up stale env vars from previous crash, then set fresh ones
+    crate::commands::settings::remove_proxy_env_vars();
+    crate::commands::settings::set_proxy_env_vars(proxy_port);
+
+    // Auto-enable system proxy (PAC) so GUI apps auto-discover the proxy.
+    // The PAC file has ;DIRECT fallback so tools work fine when app is closed.
+    if let Err(e) = crate::commands::settings::set_system_proxy_sync(true) {
+        tracing::warn!("Failed to enable system proxy: {}", e);
+    }
+
+    // Initialize MITM TLS interception (best-effort; failure means no MITM)
+    let mitm_state = tokio::runtime::Handle::current()
+        .block_on(proxy::mitm::init_mitm())
+        .ok();
+    if mitm_state.is_some() {
+        tracing::info!("MITM TLS interception enabled");
+    } else {
+        tracing::warn!("MITM TLS interception not available — using plain tunnel for HTTPS");
+    }
+
     // Build the shared application state
-    let state = Arc::new(proxy::InterceptState::new(conn, proxy_port));
+    let mut state = proxy::InterceptState::new(conn, proxy_port);
+    state.mitm = mitm_state;
+    let state = Arc::new(state);
 
     // Set up the proxy shutdown channel
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -108,16 +130,30 @@ struct ProxyShutdown {
 
 impl Drop for ProxyShutdown {
     fn drop(&mut self) {
+        // End sessions first, while the runtime is still alive
+        let state = self.state.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        state.end_all_sessions().await;
+                    })
+                });
+            }
+            Err(_) => {
+                tracing::warn!("No tokio runtime — skipping session end-on-drop");
+            }
+        }
+
+        // Send proxy shutdown signal after sessions are ended
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(());
             tracing::info!("Proxy shutdown signal sent");
         }
-        // End all active sessions synchronously via block_in_place
-        let state = self.state.clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                state.end_all_sessions().await;
-            })
-        });
+
+        // Remove persistent env vars so new processes fall back to direct
+        crate::commands::settings::remove_proxy_env_vars();
+        // Disable system proxy (PAC) so no impact when app is closed
+        let _ = crate::commands::settings::set_system_proxy_sync(false);
     }
 }

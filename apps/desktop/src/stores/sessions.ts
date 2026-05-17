@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { tauri, type SessionSummary, type SessionPage, type SessionGraph } from "../lib/tauri";
+import { useNotificationsStore } from "./notifications";
 
 type SessionsState = {
   sessions: SessionSummary[];
@@ -34,7 +35,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       const result: SessionPage = await tauri.listSessions(p, get().perPage);
       set({ sessions: result.items, page: result.page, total: result.total });
     } catch {
-      // silently ignore — the UI shows empty state
+      useNotificationsStore.getState().addNotification("Failed to load sessions");
     } finally {
       set({ loading: false });
     }
@@ -46,17 +47,23 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       set({ selectedGraph: graph, selectedProject: projectHash });
     } catch {
       set({ selectedGraph: null, selectedProject: null });
+      useNotificationsStore.getState().addNotification("Failed to load session graph");
     }
   },
 
   deleteGraph: async (projectHash: string) => {
-    await tauri.deleteSessionGraph(projectHash);
-    set((s) => ({
-      sessions: s.sessions.map((item) =>
-        item.project_hash === projectHash ? { ...item, has_graph: false } : item,
-      ),
-      selectedGraph: null,
-      selectedProject: null,
-    }));
+    try {
+      await tauri.deleteSessionGraph(projectHash);
+      set((s) => ({
+        sessions: s.sessions.map((item) =>
+          item.project_hash === projectHash ? { ...item, has_graph: false } : item,
+        ),
+        selectedGraph: null,
+        selectedProject: null,
+      }));
+      useNotificationsStore.getState().addNotification("Graph deleted", "success");
+    } catch {
+      useNotificationsStore.getState().addNotification("Failed to delete graph");
+    }
   },
 }));

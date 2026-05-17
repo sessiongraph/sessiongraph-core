@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import Dashboard from "./components/Dashboard";
 import Onboarding from "./components/Onboarding";
 import Settings from "./components/Settings";
+import ToastContainer from "./components/Toast";
 import { tauri } from "./lib/tauri";
 
 type View = "onboarding" | "dashboard" | "settings";
@@ -54,6 +55,8 @@ export default function App() {
       {view === "settings" && (
         <Settings onClose={() => setView("dashboard")} />
       )}
+
+      <ToastContainer />
     </div>
   );
 }

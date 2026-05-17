@@ -1,6 +1,6 @@
 // SessionList — list of saved sessions. See spec section 6.4.
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useSessionsStore } from "../stores/sessions";
 import type { SessionSummary } from "../lib/tauri";
 
@@ -33,6 +33,8 @@ function fmtDate(iso: string): string {
 export default function SessionList() {
   const {
     sessions,
+    page,
+    perPage,
     loading,
     total,
     fetchSessions,
@@ -43,6 +45,15 @@ export default function SessionList() {
   useEffect(() => {
     void fetchSessions(1);
   }, [fetchSessions]);
+
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+
+  const goToPage = useCallback(
+    (p: number) => {
+      if (p >= 1 && p <= totalPages) void fetchSessions(p);
+    },
+    [fetchSessions, totalPages],
+  );
 
   return (
     <section className="mt-8">
@@ -77,6 +88,29 @@ export default function SessionList() {
               onViewGraph={() => viewGraph(s.project_hash)}
             />
           ))}
+        </div>
+      )}
+
+      {/* ── Pagination ──────────────────────────────── */}
+      {totalPages > 1 && (
+        <div className="mt-4 flex items-center justify-center gap-3">
+          <button
+            onClick={() => goToPage(page - 1)}
+            disabled={page <= 1}
+            className="rounded px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            ← Prev
+          </button>
+          <span className="text-xs text-text-secondary">
+            {page} / {totalPages}
+          </span>
+          <button
+            onClick={() => goToPage(page + 1)}
+            disabled={page >= totalPages}
+            className="rounded px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Next →
+          </button>
         </div>
       )}
     </section>

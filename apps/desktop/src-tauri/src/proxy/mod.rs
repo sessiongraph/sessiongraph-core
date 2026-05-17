@@ -3,6 +3,7 @@
 pub mod compress;
 pub mod forward;
 pub mod intercept;
+pub mod mitm;
 pub mod server;
 pub mod session;
 

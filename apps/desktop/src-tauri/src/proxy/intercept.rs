@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::compress;
 use super::forward::{self, ForwardError, Provider};
+use super::mitm::MitmState;
 use super::session::{self, ActiveSession};
 use crate::db::queries;
 use crate::graph::injector;
@@ -44,6 +45,8 @@ pub struct InterceptState {
     pub openai_base_url: Option<String>,
     /// Channel to trigger proxy restart
     pub restart_tx: TokioMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// MITM TLS interception state (optional — None = tunnel passthrough)
+    pub mitm: Option<Arc<MitmState>>,
 }
 
 impl InterceptState {
@@ -87,6 +90,7 @@ impl InterceptState {
             anthropic_base_url,
             openai_base_url,
             restart_tx: TokioMutex::new(None),
+            mitm: None,
         }
     }
 

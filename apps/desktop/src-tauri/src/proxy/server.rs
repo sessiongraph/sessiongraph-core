@@ -3,6 +3,7 @@
 //! Provides:
 //! - `POST /v1/messages`          — Anthropic Messages API pass-through
 //! - `POST /v1/chat/completions`  — OpenAI / OpenRouter / compatible pass-through
+//! - `CONNECT *`                  — TCP tunneling (HTTPS proxy support)
 //! - `GET  /health`               — health check
 //! - `GET  /stats`                — live stats for dashboard
 //! - `GET  /sessions/:project_hash/graph` — session graph by project
@@ -10,9 +11,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::Path;
-use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::extract::{Path, Request, State};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -21,6 +21,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
 use super::intercept::{self, InterceptState};
+use super::mitm;
 
 // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -265,6 +266,82 @@ async fn session_graph_handler(
     }
 }
 
+// ── CONNECT tunneling (HTTPS proxy support) ──────────────────────────────
+
+/// Handle CONNECT tunneling for HTTPS proxy traffic.
+/// If MITM interception is available, performs TLS interception so the proxy
+/// can inspect/modify the HTTP traffic inside. Otherwise falls back to a raw
+/// TCP tunnel (bytes relayed, no inspection possible).
+/// CRITICAL: does NOT await `hyper::upgrade::on(req)` in the handler — the
+/// upgrade future can only resolve AFTER the 200 OK response is returned.
+async fn connect_handler(State(state): State<Arc<InterceptState>>, req: Request) -> Response {
+    let host_port = req.uri().to_string();
+
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) => match p.parse::<u16>() {
+            Ok(port) => (h.to_string(), port),
+            Err(_) => {
+                tracing::warn!("CONNECT invalid port: {}", p);
+                return (StatusCode::BAD_REQUEST, "Invalid port").into_response();
+            }
+        },
+        None => (host_port.clone(), 443),
+    };
+
+    tracing::debug!("CONNECT to {host}:{port}");
+
+    let upgrade = hyper::upgrade::on(req);
+    let mitm = state.mitm.clone();
+    let intercept = state.clone();
+
+    tokio::spawn(async move {
+        let upgraded = match upgrade.await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!("CONNECT upgrade to {host}:{port} failed: {e}");
+                return;
+            }
+        };
+
+        if let Some(mitm) = mitm {
+            tracing::debug!("MITM intercept for {host}:{port}");
+            mitm::handle_connect(upgraded, &host, port, intercept, mitm).await;
+        } else {
+            tracing::debug!("Tunnel passthrough for {host}:{port}");
+            if let Err(e) = tunnel(upgraded, &host, port).await {
+                tracing::debug!("Tunnel to {host}:{port} closed: {e}");
+            }
+        }
+    });
+
+    StatusCode::OK.into_response()
+}
+
+/// Relay bytes bidirectionally between the upgraded connection and the
+/// upstream server (plain TCP tunnel — used as fallback until MITM is ready).
+async fn tunnel(
+    upgraded: hyper::upgrade::Upgraded,
+    host: &str,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut upgraded = hyper_util::rt::TokioIo::new(upgraded);
+    let mut upstream = tokio::net::TcpStream::connect((host, port)).await?;
+    tokio::io::copy_bidirectional(&mut upgraded, &mut upstream).await?;
+    Ok(())
+}
+
+// ── Fallback handler ──────────────────────────────────────────────────────
+
+/// Catch-all that routes CONNECT requests to the tunnel handler and returns
+/// 404 for everything else.
+async fn fallback_handler(State(state): State<Arc<InterceptState>>, req: Request) -> Response {
+    if req.method() == Method::CONNECT {
+        connect_handler(State(state), req).await
+    } else {
+        (StatusCode::NOT_FOUND, "Not Found").into_response()
+    }
+}
+
 // ── Server startup ────────────────────────────────────────────────────────
 
 /// Build the Axum router.
@@ -277,6 +354,7 @@ fn build_router(state: Arc<InterceptState>) -> Router {
         .route("/v1/chat/completions", post(openai_handler))
         .route("/sessions/:project_hash/graph", get(session_graph_handler))
         .layer(CorsLayer::permissive())
+        .fallback(fallback_handler)
         .with_state(state)
 }
 

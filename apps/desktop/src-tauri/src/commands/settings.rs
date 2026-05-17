@@ -103,7 +103,7 @@ pub async fn restart_proxy(
 fn cli_snippet(port: u16) -> String {
     if cfg!(windows) {
         format!(
-            "\n# SessionGraph auto-detect (proxy running → use it; closed → direct)\n\
+            "\n# SessionGraph auto-detect (proxy running -> use it; closed -> direct)\n\
              $sgProxyUrl = 'http://localhost:{port}'\n\
              try {{\n\
              \x20 $sgResponse = Invoke-WebRequest -Uri \"$sgProxyUrl/health\" -TimeoutSec 1 -ErrorAction Stop\n\
@@ -115,7 +115,7 @@ fn cli_snippet(port: u16) -> String {
         )
     } else {
         format!(
-            "\n# SessionGraph auto-detect (proxy running → use it; closed → direct)\n\
+            "\n# SessionGraph auto-detect (proxy running -> use it; closed -> direct)\n\
              if curl -sf http://localhost:{port}/health > /dev/null 2>&1; then\n\
              \x20 export ANTHROPIC_BASE_URL=http://localhost:{port}\n\
              \x20 export OPENAI_BASE_URL=http://localhost:{port}/v1\n\
@@ -124,11 +124,112 @@ fn cli_snippet(port: u16) -> String {
     }
 }
 
+/// Set persistent user env vars pointing AI tools to the proxy.
+/// Written to HKCU\Environment so new processes auto-discover the proxy.
+/// Called when proxy starts, removed when proxy stops (see `remove_proxy_env_vars`).
+pub fn set_proxy_env_vars(port: u16) {
+    if !cfg!(windows) {
+        return;
+    }
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let proxy_url = format!("http://localhost:{port}");
+    let proxy_str = proxy_url.as_str();
+    let openai_url = format!("http://localhost:{port}/v1");
+    let openai_str = openai_url.as_str();
+    let pairs: [(&str, &str); 4] = [
+        ("ANTHROPIC_BASE_URL", proxy_str),
+        ("OPENAI_BASE_URL", openai_str),
+        ("HTTPS_PROXY", proxy_str),
+        ("HTTP_PROXY", proxy_str),
+    ];
+    let mut ok = true;
+    for (name, value) in &pairs {
+        let status = std::process::Command::new("setx")
+            .args([name, value])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                tracing::warn!(
+                    "setx {name}={value} failed with exit code {}",
+                    s.code().unwrap_or(-1)
+                );
+                ok = false;
+            }
+            Err(e) => {
+                tracing::warn!("setx {name}={value} could not be launched: {e}");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        tracing::info!("Proxy env vars set for port {port}");
+    }
+}
+
+/// Remove persistent user env vars for the proxy.
+/// Called when proxy stops so new processes fall back to direct connection.
+pub fn remove_proxy_env_vars() {
+    if !cfg!(windows) {
+        return;
+    }
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let names = [
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_BASE_URL",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+    ];
+    for name in &names {
+        let status = std::process::Command::new("reg")
+            .args(["delete", "HKCU\\Environment", "/v", name, "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                tracing::warn!(
+                    "reg delete HKCU\\Environment /v {name} failed with exit code {}",
+                    s.code().unwrap_or(-1)
+                );
+            }
+            Err(e) => {
+                tracing::warn!("reg delete HKCU\\Environment /v {name} could not be launched: {e}");
+            }
+        }
+    }
+    tracing::info!("Proxy env vars removed");
+}
+
 /// Detect the shell profile path.
 fn profile_path() -> Option<std::path::PathBuf> {
     if cfg!(windows) {
-        // PowerShell $PROFILE — current user, current host
-        std::env::var("PROFILE").ok().map(std::path::PathBuf::from)
+        let user = std::env::var("USERPROFILE").ok()?;
+        let docs = std::path::PathBuf::from(&user).join("Documents");
+
+        // PowerShell 7 (modern): ~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1
+        let ps7 = docs
+            .join("PowerShell")
+            .join("Microsoft.PowerShell_profile.ps1");
+        if ps7.exists() {
+            return Some(ps7);
+        }
+        // Windows PowerShell (legacy): ~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1
+        let ps5 = docs
+            .join("WindowsPowerShell")
+            .join("Microsoft.PowerShell_profile.ps1");
+        if ps5.exists() {
+            return Some(ps5);
+        }
+        // Neither exists yet — default to PowerShell 7 path (will be created)
+        Some(ps7)
     } else {
         let home = std::env::var("HOME").ok()?;
         let zsh = std::path::PathBuf::from(&home).join(".zshrc");
@@ -172,11 +273,20 @@ pub fn add_cli_profile(state: tauri::State<'_, Arc<InterceptState>>) -> Result<S
         return Err("CLI auto-detect is already installed".to_string());
     }
 
+    // Ensure parent directory exists (PowerShell profile dir may not exist yet)
+    if let Some(parent) = profile.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
+    }
+
     // Append the snippet
     let mut content = existing;
     content.push_str(&snippet);
     std::fs::write(&profile, &content)
         .map_err(|e| format!("Failed to write to {}: {}", profile.display(), e))?;
+
+    // Also set persistent registry env vars for all new processes
+    set_proxy_env_vars(port);
 
     tracing::info!("CLI auto-detect snippet added to {}", profile.display());
     Ok(profile.to_string_lossy().to_string())
@@ -204,6 +314,9 @@ pub fn remove_cli_profile() -> Result<String, String> {
     }
     let new_content = lines.join("\n");
     std::fs::write(&profile, &new_content).map_err(|e| e.to_string())?;
+
+    // Also remove persistent registry env vars
+    remove_proxy_env_vars();
 
     tracing::info!("CLI auto-detect snippet removed from {}", profile.display());
     Ok(profile.to_string_lossy().to_string())
@@ -326,15 +439,17 @@ pub fn write_pac_file(port: u16) -> Result<std::path::PathBuf, String> {
         shExpMatch(host, "api.openai.com") ||
         shExpMatch(host, "*.openai.com") ||
         shExpMatch(host, "openrouter.ai") ||
-        shExpMatch(host, "*.openrouter.ai")) {{
+        shExpMatch(host, "*.openrouter.ai") ||
+        shExpMatch(host, "api.deepseek.com") ||
+        shExpMatch(host, "cloudcode-pa.googleapis.com") ||
+        shExpMatch(host, "generativelanguage.googleapis.com")) {{
         return "PROXY 127.0.0.1:{port}; DIRECT";
     }}
     return "DIRECT";
 }}
 "#,
     );
-    std::fs::write(&path, &content)
-        .map_err(|e| format!("Cannot write PAC file: {e}"))?;
+    std::fs::write(&path, &content).map_err(|e| format!("Cannot write PAC file: {e}"))?;
     tracing::info!("PAC file written to {}", path.display());
     Ok(path)
 }
@@ -382,9 +497,8 @@ pub fn get_system_proxy_status() -> SystemProxyStatus {
     }
 }
 
-/// Enable or disable the system proxy (PAC file).
-#[tauri::command]
-pub async fn set_system_proxy(enabled: bool) -> Result<(), String> {
+/// Enable or disable the system proxy (PAC file). Callable from IPC or directly.
+pub fn set_system_proxy_sync(enabled: bool) -> Result<(), String> {
     let dir = sessiongraph_dir().ok_or("Cannot determine home directory")?;
     let pac_path = dir.join("proxy.pac");
 
@@ -395,7 +509,6 @@ pub async fn set_system_proxy(enabled: bool) -> Result<(), String> {
     let pac_url = format!("file:///{}", pac_path.to_string_lossy());
 
     if cfg!(windows) {
-        let action = if enabled { "Set" } else { "Remove" };
         let cmd = if enabled {
             format!(
                 "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -Value '{url}'",
@@ -405,22 +518,37 @@ pub async fn set_system_proxy(enabled: bool) -> Result<(), String> {
             "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -ErrorAction SilentlyContinue".to_string()
         };
 
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &cmd])
-            .output()
-            .map_err(|e| format!("Failed to run PowerShell: {e}"))?;
+        let output = {
+            let mut c = std::process::Command::new("powershell");
+            c.args(["-NoProfile", "-Command", &cmd]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            c.output()
+                .map_err(|e| format!("Failed to run PowerShell: {e}"))?
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let action = if enabled { "enable" } else { "disable" };
             return Err(format!("Failed to {action} system proxy: {stderr}"));
         }
 
-        tracing::info!("System proxy {}", if enabled { "enabled" } else { "disabled" });
+        tracing::info!(
+            "System proxy {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
         Ok(())
     } else {
-        // macOS/Linux proxy configuration via networksetup / gsettings
-        // Not yet implemented — PRs welcome.
         tracing::warn!("set_system_proxy not implemented on this platform");
         Err("System proxy configuration is only supported on Windows".to_string())
     }
+}
+
+/// Enable or disable the system proxy (PAC file). IPC entry point.
+#[tauri::command]
+pub async fn set_system_proxy(enabled: bool) -> Result<(), String> {
+    set_system_proxy_sync(enabled)
 }

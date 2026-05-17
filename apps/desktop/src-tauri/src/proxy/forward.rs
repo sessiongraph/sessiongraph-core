@@ -381,6 +381,8 @@ pub fn detect_tool(headers: &HeaderMap, provider: &Provider) -> Option<String> {
         Some("continue".into())
     } else if ua.contains("aider") {
         Some("aider".into())
+    } else if ua.contains("antigravity") || ua.contains("google-gemini-cli") {
+        Some("antigravity".into())
     } else if ua.contains("cline") {
         Some("cline".into())
     } else if ua.is_empty() && *provider == Provider::Anthropic {

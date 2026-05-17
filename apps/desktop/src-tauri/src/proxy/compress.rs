@@ -1,7 +1,7 @@
 //! Headroom compression subprocess caller. See spec section 5.4.
 //!
-//! Spawns `~/.sessiongraph/venv/Scripts/headroom-compress.py` (or the
-//! Unix equivalent) as a subprocess, pipes the request messages via stdin,
+//! Invokes `~/.sessiongraph/venv/bin/python -m headroom.compress` (or the
+//! Windows equivalent) as a subprocess, pipes the request messages via stdin,
 //! and reads the compressed result from stdout.
 //!
 //! If the subprocess fails for ANY reason (crashes, times out, returns
@@ -36,7 +36,7 @@ pub async fn compress(
     messages: &[serde_json::Value],
     model: &str,
 ) -> Option<CompressOutput> {
-    let script_path = compress_script_path()?;
+    let python_path = venv_python_path()?;
 
     let input = CompressInput {
         messages: &messages.to_vec(),
@@ -45,26 +45,15 @@ pub async fn compress(
 
     let input_json = serde_json::to_string(&input).ok()?;
 
-    let result = tokio::process::Command::new("python")
-        .arg(&script_path)
-        .stdin(std::process::Stdio::piped())
+    let result = tokio::process::Command::new(&python_path)
+        .args(["-m", "headroom.compress", "--input-json", &input_json, "--mode", "token", "--output-json"])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .ok()?;
 
-    let mut child = result;
-
-    // Write JSON to stdin
-    use tokio::io::AsyncWriteExt;
-    if let Some(ref mut stdin) = child.stdin {
-        if stdin.write_all(input_json.as_bytes()).await.is_err() {
-            tracing::warn!("Compression: failed to write to subprocess stdin");
-            let _ = child.kill().await;
-            return None;
-        }
-    }
-    // (stdin handle dropped here — signals EOF to Python)
+    let child = result;
 
     // Read output with a 15-second timeout
     let output = tokio::time::timeout(
@@ -77,12 +66,12 @@ pub async fn compress(
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             tracing::warn!("Compression: subprocess error: {}", e);
+            crate::db::log_error(&format!("Compression subprocess error: {}", e));
             return None;
         }
         Err(_elapsed) => {
             tracing::warn!("Compression: subprocess timed out after 15s");
-            // Try to kill the hung process
-            // (child is moved into wait_with_output, so we can't easily kill it here)
+            crate::db::log_error("Compression subprocess timed out after 15s");
             return None;
         }
     };
@@ -94,6 +83,11 @@ pub async fn compress(
             output.status,
             stderr.trim()
         );
+        crate::db::log_error(&format!(
+            "Compression exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
         return None;
     }
 
@@ -111,37 +105,38 @@ pub async fn compress(
         }
         Err(e) => {
             tracing::warn!("Compression: failed to parse output: {}", e);
+            crate::db::log_error(&format!("Compression output parse error: {}", e));
             None
         }
     }
 }
 
-/// Resolve the path to the compression Python script.
-fn compress_script_path() -> Option<PathBuf> {
+/// Resolve the path to the Python executable inside the SessionGraph venv.
+fn venv_python_path() -> Option<PathBuf> {
     let home = if cfg!(windows) {
         std::env::var("USERPROFILE").ok()?
     } else {
         std::env::var("HOME").ok()?
     };
 
-    let script = if cfg!(windows) {
+    let python = if cfg!(windows) {
         PathBuf::from(&home)
             .join(".sessiongraph")
             .join("venv")
             .join("Scripts")
-            .join("headroom-compress.py")
+            .join("python.exe")
     } else {
         PathBuf::from(&home)
             .join(".sessiongraph")
             .join("venv")
             .join("bin")
-            .join("headroom-compress.py")
+            .join("python")
     };
 
-    if script.exists() {
-        Some(script)
+    if python.exists() {
+        Some(python)
     } else {
-        tracing::warn!("Compression script not found at {}", script.display());
+        tracing::warn!("Compression: Python venv not found at {}", python.display());
         None
     }
 }

@@ -87,12 +87,20 @@ export type VenvStatus = {
   python_path: string | null;
 };
 
+export type DailyTokenUsage = {
+  date: string;
+  tokens_raw: number;
+  tokens_sent: number;
+};
+
 // --- Commands -------------------------------------------------------------
 
 export const tauri = {
   // stats
   getDashboardStats: () => invoke<DashboardStats>("get_dashboard_stats"),
   getCurrentSession: () => invoke<CurrentSession | null>("get_current_session"),
+  getTokenUsageChart: (days: number) =>
+    invoke<DailyTokenUsage[]>("get_token_usage_chart", { days }),
 
   // sessions
   listSessions: (page: number, perPage: number) =>
@@ -107,6 +115,8 @@ export const tauri = {
   getSettings: () => invoke<Settings>("get_settings"),
   updateSetting: (key: string, value: string) =>
     invoke<void>("update_setting", { key, value }),
+  deleteAllData: () => invoke<void>("delete_all_data"),
+  getAppVersion: () => invoke<string>("get_app_version"),
 
   // proxy control
   getProxyStatus: () => invoke<ProxyStatus>("get_proxy_status"),

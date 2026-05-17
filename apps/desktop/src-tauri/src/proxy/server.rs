@@ -147,6 +147,53 @@ async fn stats_handler(State(state): State<Arc<InterceptState>>) -> Json<StatsRe
     })
 }
 
+/// `GET /sessions` — returns a paginated list of past sessions.
+async fn sessions_handler(
+    State(state): State<Arc<InterceptState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let page: u32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let per_page: u32 = params.get("per_page").and_then(|v| v.parse().ok()).unwrap_or(20);
+
+    let db = match state.db.lock() {
+        Ok(d) => d,
+        Err(_) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to access database",
+            )
+                .into_response();
+        }
+    };
+
+    match crate::db::queries::list_sessions_paginated(&db, page, per_page) {
+        Ok((items, total)) => {
+            #[derive(Serialize)]
+            struct SessionsResponse {
+                items: Vec<crate::commands::sessions::SessionSummary>,
+                page: u32,
+                per_page: u32,
+                total: u64,
+            }
+            Json(SessionsResponse {
+                items,
+                page,
+                per_page,
+                total,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to list sessions: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to list sessions",
+            )
+                .into_response()
+        }
+    }
+}
+
 /// `GET /sessions/:project_hash/graph` — returns the session graph JSON.
 async fn session_graph_handler(
     State(state): State<Arc<InterceptState>>,
@@ -166,7 +213,7 @@ async fn session_graph_handler(
     match crate::db::queries::get_latest_graph_json(&db, &project_hash) {
         Ok(Some(graph_json)) => {
             // Parse and return the JSON with proper content-type
-            match serde_json::from_str(&graph_json) {
+            match serde_json::from_str::<serde_json::Value>(&graph_json) {
                 Ok(parsed) => Json(parsed).into_response(),
                 Err(e) => {
                     tracing::error!("Failed to parse graph JSON: {}", e);
@@ -203,6 +250,7 @@ fn build_router(state: Arc<InterceptState>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/stats", get(stats_handler))
+        .route("/sessions", get(sessions_handler))
         .route("/v1/messages", post(anthropic_handler))
         .route("/v1/chat/completions", post(openai_handler))
         .route("/sessions/:project_hash/graph", get(session_graph_handler))

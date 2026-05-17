@@ -5,6 +5,9 @@
 
 pub mod queries;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::Context;
 use rusqlite::Connection;
 use std::fs::OpenOptions;

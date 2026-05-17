@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::db::queries;
+use crate::proxy;
 use crate::proxy::InterceptState;
 
 #[derive(Debug, Serialize)]
@@ -174,4 +175,21 @@ pub async fn setup_venv() -> Result<String, String> {
 
     tracing::info!("Setting up Python venv for Headroom compression");
     crate::venv::setup_venv().await
+}
+
+/// Delete all session data from the database.
+#[tauri::command]
+pub fn delete_all_data(
+    state: tauri::State<'_, Arc<InterceptState>>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::db::queries::delete_all_data(&db).map_err(|e| e.to_string())?;
+    tracing::info!("All session data deleted");
+    Ok(())
+}
+
+/// Return the app version string.
+#[tauri::command]
+pub fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }

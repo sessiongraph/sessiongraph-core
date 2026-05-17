@@ -5,3 +5,6 @@ pub mod injector;
 pub mod schema;
 
 pub use schema::SessionGraph;
+
+#[cfg(test)]
+mod tests;

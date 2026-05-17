@@ -3240,7 +3240,6 @@ dependencies = [
  "chrono",
  "futures",
  "hyper",
- "once_cell",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

@@ -93,3 +93,28 @@ pub async fn get_current_session(
         },
     }))
 }
+
+#[derive(Debug, serde::Serialize)]
+pub struct DailyTokenUsage {
+    pub date: String,
+    pub tokens_raw: u64,
+    pub tokens_sent: u64,
+}
+
+#[tauri::command]
+pub fn get_token_usage_chart(
+    state: tauri::State<'_, Arc<InterceptState>>,
+    days: u32,
+) -> Result<Vec<DailyTokenUsage>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let rows = crate::db::queries::get_token_usage_last_n_days(&db, days)
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(date, tokens_raw, tokens_sent)| DailyTokenUsage {
+            date,
+            tokens_raw,
+            tokens_sent,
+        })
+        .collect())
+}

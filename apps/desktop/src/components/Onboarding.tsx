@@ -11,25 +11,32 @@ interface Props {
 
 export default function Onboarding({ onComplete }: Props) {
   const [step, setStep] = useState<Step>(1);
-  const [script, setScript] = useState("");
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [, setVenvStatus] = useState<VenvStatus | null>(null);
   const [venvSetupDone, setVenvSetupDone] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [profileInstalled, setProfileInstalled] = useState(false);
+  const [profileInstalling, setProfileInstalling] = useState(false);
+  const [profileResult, setProfileResult] = useState<string | null>(null);
 
   useEffect(() => {
-    void tauri.getSetupScript().then(setScript);
     void tauri.getProxyStatus().then(setProxyStatus);
-    // Also check venv status on mount
+    void tauri.getCliProfileStatus().then((s) => setProfileInstalled(s.installed));
     void tauri.checkVenvStatus().then(setVenvStatus);
   }, []);
 
-  const handleCopyScript = async () => {
-    await navigator.clipboard.writeText(script);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleInstallProfile = async () => {
+    setProfileInstalling(true);
+    setProfileResult(null);
+    try {
+      const path = await tauri.addCliProfile();
+      setProfileInstalled(true);
+      setProfileResult(`Added to ${path}`);
+    } catch (e) {
+      setProfileResult(String(e));
+    }
+    setProfileInstalling(false);
   };
 
   const handleCheckHealth = async () => {
@@ -104,29 +111,38 @@ export default function Onboarding({ onComplete }: Props) {
             computer.
           </p>
           <p className="mt-4 text-sm text-text-secondary">
-            Add this to your shell profile so CLI tools auto-detect the proxy.
-            When SessionGraph is closed, they'll connect directly — no impact.
+            One click to add auto-detection to your shell profile. CLI tools
+            will use the proxy when running, or connect directly when closed.
           </p>
-          <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-background p-4 font-mono text-xs text-text-primary whitespace-pre-wrap">
-            {script || "Loading…"}
-          </pre>
-          <div className="mt-4 flex gap-3">
-            <button
-              onClick={handleCopyScript}
-              className="rounded-lg border border-border px-4 py-2 text-sm text-text-primary transition-colors hover:bg-surface"
-            >
-              {copied ? "Copied!" : "Copy script"}
-            </button>
+          <div className="mt-6 flex flex-col items-center gap-3">
+            {profileInstalled ? (
+              <p className="text-sm text-success">✓ Auto-detection is installed</p>
+            ) : (
+              <button
+                onClick={handleInstallProfile}
+                disabled={profileInstalling}
+                className="rounded-lg bg-accent px-8 py-3 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+              >
+                {profileInstalling ? "Installing…" : "Install auto-detection"}
+              </button>
+            )}
+            {profileResult && (
+              <p className={`text-xs ${profileResult.startsWith("Added") ? "text-success" : "text-amber-400"}`}>
+                {profileResult}
+              </p>
+            )}
+          </div>
+          <div className="mt-6 flex justify-center gap-3">
             <button
               onClick={() => setStep(3)}
-              className="rounded-lg bg-accent px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90"
+              className="rounded-lg bg-accent/20 px-6 py-2 text-sm text-text-primary transition-colors hover:bg-accent/30"
             >
-              I've set it up
+              {profileInstalled ? "Next →" : "Skip for now"}
             </button>
           </div>
           <button
             onClick={() => setStep(1)}
-            className="mt-4 block text-xs text-text-secondary hover:text-text-primary"
+            className="mt-4 block text-xs text-text-secondary hover:text-text-primary mx-auto"
           >
             ← Back
           </button>

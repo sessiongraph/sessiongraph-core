@@ -86,6 +86,9 @@ pub fn run() {
             commands::settings::get_app_version,
             commands::settings::get_system_proxy_status,
             commands::settings::set_system_proxy,
+            commands::settings::get_cli_profile_status,
+            commands::settings::add_cli_profile,
+            commands::settings::remove_cli_profile,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {

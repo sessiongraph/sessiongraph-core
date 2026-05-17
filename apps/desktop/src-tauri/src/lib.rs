@@ -50,9 +50,7 @@ pub fn run() {
     }
 
     // Initialize MITM TLS interception (best-effort; failure means no MITM)
-    let mitm_state = tokio::runtime::Handle::current()
-        .block_on(proxy::mitm::init_mitm())
-        .ok();
+    let mitm_state = proxy::mitm::init_mitm().ok();
     if mitm_state.is_some() {
         tracing::info!("MITM TLS interception enabled");
     } else {

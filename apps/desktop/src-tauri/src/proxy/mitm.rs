@@ -35,7 +35,7 @@ fn sessiongraph_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".sessiongraph"))
 }
 
-pub async fn init_mitm() -> Result<Arc<MitmState>, String> {
+pub fn init_mitm() -> Result<Arc<MitmState>, String> {
     let dir = sessiongraph_dir().ok_or("Cannot determine home directory")?;
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot create dir: {e}"))?;
 

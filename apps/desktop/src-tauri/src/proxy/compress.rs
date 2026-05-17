@@ -66,12 +66,14 @@ pub async fn compress(messages: &[serde_json::Value], model: &str) -> Option<Com
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped());
 
-    // Prevent a console window flashing on Windows for every compression call.
+    // On Windows: no console window + detach from parent's Ctrl+C signal group
+    // so Claude Code's Ctrl+C doesn't kill the Python subprocess mid-run.
     #[cfg(windows)]
     #[allow(unused_imports)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(0x08000000 | 0x00000200);
     }
 
     let result = cmd.spawn().ok()?;

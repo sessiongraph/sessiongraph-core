@@ -131,20 +131,56 @@ pub fn hash_api_key(api_key: &str) -> String {
 /// Compute a stable project hash from available context.
 ///
 /// Priority:
-/// 1. Working directory path (if detectable from system prompt)
-/// 2. First 100 chars of the first system prompt
-/// 3. Fallback: "unknown"
+/// 1. `cwd` from Claude Code's `<env>` block  (most stable)
+/// 2. Working directory extracted from common system prompt patterns
+/// 3. First 100 chars of the system prompt as last resort
+/// 4. Fallback: "unknown"
 ///
 /// The result is a hex-encoded SHA-256 truncated to 16 characters.
 pub fn compute_project_hash(system_prompt: Option<&str>, _working_dir: Option<&str>) -> String {
     let input = system_prompt
-        .map(|s| s.chars().take(100).collect::<String>())
-        .filter(|s| !s.is_empty())
+        .and_then(extract_working_dir)
+        .or_else(|| {
+            system_prompt
+                .map(|s| s.chars().take(100).collect::<String>())
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| "unknown".to_string());
 
     let digest = Sha256::digest(input.as_bytes());
     // First 8 bytes → 16 hex chars
     digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Try to extract a stable working directory path from a system prompt.
+///
+/// Claude Code injects `<env>` with `cwd:` and `hostname:` fields.
+/// Other tools may use different patterns — we try several.
+fn extract_working_dir(prompt: &str) -> Option<String> {
+    // Claude Code: <env>\ncwd: /path/to/project\n...
+    if let Some(cwd_pos) = prompt.find("\ncwd:").or_else(|| {
+        if prompt.starts_with("cwd:") { Some(0) } else { None }
+    }) {
+        let rest = &prompt[cwd_pos..].trim_start_matches('\n');
+        let after_cwd = rest.strip_prefix("cwd:")?.trim();
+        let path = after_cwd.lines().next()?.trim();
+        if !path.is_empty() && path.len() < 300 {
+            return Some(path.to_string());
+        }
+    }
+
+    // Generic "Working directory: /path" pattern
+    for prefix in &["Working directory: ", "working directory: ", "CWD: "] {
+        if let Some(pos) = prompt.find(prefix) {
+            let rest = &prompt[pos + prefix.len()..];
+            let path = rest.lines().next()?.trim();
+            if !path.is_empty() && path.len() < 300 {
+                return Some(path.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 /// Infer a project name from the system prompt.

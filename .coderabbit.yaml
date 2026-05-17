@@ -1,0 +1,45 @@
+language: en-US
+
+reviews:
+  # Review every file in the PR, not just changed lines
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  # Automatically review all files touched in a PR
+  auto_review:
+    enabled: true
+    drafts: true
+
+  # Paths to skip (generated files, assets, lock files)
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!**/icons/**"
+    - "!**/*.png"
+    - "!**/*.ico"
+    - "!**/*.icns"
+    - "!**/*.svg"
+
+  path_instructions:
+    - path: "apps/desktop/src/**/*.{ts,tsx}"
+      instructions: |
+        This is a React + TypeScript frontend for a Tauri desktop app.
+        Focus on: type safety, React best practices, store (Zustand/signals) usage,
+        component composition, accessibility, and any Tauri IPC call correctness.
+
+    - path: "apps/desktop/src-tauri/src/**/*.rs"
+      instructions: |
+        This is Rust code running inside a Tauri app.
+        Focus on: memory safety, error handling (avoid unwrap/expect in production paths),
+        SQL query correctness, async correctness, and Tauri command hygiene.
+
+    - path: "packages/**/*.ts"
+      instructions: |
+        This is a shared TypeScript library (sessiongraph-core).
+        Focus on: exported API surface clarity, type correctness, and avoiding
+        accidental breaking changes.
+
+chat:
+  auto_reply: true

@@ -11,7 +11,7 @@ reviews:
   # Automatically review all files touched in a PR
   auto_review:
     enabled: true
-    drafts: false
+    drafts: true
 
   # Paths to skip (generated files, assets, lock files)
   path_filters:

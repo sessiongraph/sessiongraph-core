@@ -136,4 +136,9 @@ export const tauri = {
   // system proxy
   getSystemProxyStatus: () => invoke<SystemProxyStatus>("get_system_proxy_status"),
   setSystemProxy: (enabled: boolean) => invoke<void>("set_system_proxy", { enabled }),
+
+  // CLI profile auto-detect
+  getCliProfileStatus: () => invoke<{ installed: boolean; profile_path: string | null }>("get_cli_profile_status"),
+  addCliProfile: () => invoke<string>("add_cli_profile"),
+  removeCliProfile: () => invoke<string>("remove_cli_profile"),
 };

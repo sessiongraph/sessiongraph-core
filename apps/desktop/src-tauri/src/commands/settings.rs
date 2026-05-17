@@ -99,12 +99,11 @@ pub async fn restart_proxy(
     Ok("Proxy restart signal sent. Please restart the app to complete restart.".to_string())
 }
 
-#[tauri::command]
-pub fn get_setup_script(state: tauri::State<'_, Arc<InterceptState>>) -> String {
-    let port = state.proxy_port;
+/// Generate the CLI health-check snippet for a given port.
+fn cli_snippet(port: u16) -> String {
     if cfg!(windows) {
         format!(
-            "# Add this to your PowerShell profile ($PROFILE):\n\
+            "\n# SessionGraph auto-detect (proxy running → use it; closed → direct)\n\
              $sgProxyUrl = 'http://localhost:{port}'\n\
              try {{\n\
              \x20 $sgResponse = Invoke-WebRequest -Uri \"$sgProxyUrl/health\" -TimeoutSec 1 -ErrorAction Stop\n\
@@ -112,27 +111,109 @@ pub fn get_setup_script(state: tauri::State<'_, Arc<InterceptState>>) -> String 
              \x20\x20   $env:ANTHROPIC_BASE_URL = $sgProxyUrl\n\
              \x20\x20   $env:OPENAI_BASE_URL = \"$sgProxyUrl/v1\"\n\
              \x20 }}\n\
-             }} catch {{ }}\n\
-             \n\
-             # What this does:\n\
-             # - Proxy running → env vars set → CLI tools use proxy\n\
-             # - Proxy closed → vars not set → tools connect directly\n\
-             # Open a new terminal (or restart your shell) after adding.\n"
+             }} catch {{ }}\n"
         )
     } else {
         format!(
-            "# Add this to ~/.zshrc (or ~/.bashrc):\n\
+            "\n# SessionGraph auto-detect (proxy running → use it; closed → direct)\n\
              if curl -sf http://localhost:{port}/health > /dev/null 2>&1; then\n\
              \x20 export ANTHROPIC_BASE_URL=http://localhost:{port}\n\
              \x20 export OPENAI_BASE_URL=http://localhost:{port}/v1\n\
-             fi\n\
-             \n\
-             # What this does:\n\
-             # - Proxy running → env vars set → CLI tools use proxy\n\
-             # - Proxy closed → vars not set → tools connect directly\n\
-             # Then: source ~/.zshrc (or open a new terminal).\n"
+             fi\n"
         )
     }
+}
+
+/// Detect the shell profile path.
+fn profile_path() -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        // PowerShell $PROFILE — current user, current host
+        std::env::var("PROFILE").ok().map(std::path::PathBuf::from)
+    } else {
+        let home = std::env::var("HOME").ok()?;
+        let zsh = std::path::PathBuf::from(&home).join(".zshrc");
+        if zsh.exists() {
+            Some(zsh)
+        } else {
+            Some(std::path::PathBuf::from(&home).join(".bashrc"))
+        }
+    }
+}
+
+/// Check if the CLI profile already has the SessionGraph snippet.
+#[tauri::command]
+pub fn get_cli_profile_status() -> serde_json::Value {
+    let snippet_marker = "# SessionGraph auto-detect";
+    let installed = profile_path()
+        .map(|p| {
+            std::fs::read_to_string(&p)
+                .map(|content| content.contains(snippet_marker))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    serde_json::json!({
+        "installed": installed,
+        "profile_path": profile_path().map(|p| p.to_string_lossy().to_string()),
+    })
+}
+
+/// Automatically add the CLI health-check snippet to the user's shell profile.
+/// Returns the profile path that was modified.
+#[tauri::command]
+pub fn add_cli_profile(state: tauri::State<'_, Arc<InterceptState>>) -> Result<String, String> {
+    let port = state.proxy_port;
+    let snippet = cli_snippet(port);
+    let profile = profile_path().ok_or("Could not determine shell profile path")?;
+
+    // Read existing content
+    let existing = std::fs::read_to_string(&profile).unwrap_or_default();
+    if existing.contains("# SessionGraph auto-detect") {
+        return Err("CLI auto-detect is already installed".to_string());
+    }
+
+    // Append the snippet
+    let mut content = existing;
+    content.push_str(&snippet);
+    std::fs::write(&profile, &content)
+        .map_err(|e| format!("Failed to write to {}: {}", profile.display(), e))?;
+
+    tracing::info!("CLI auto-detect snippet added to {}", profile.display());
+    Ok(profile.to_string_lossy().to_string())
+}
+
+/// Remove the SessionGraph snippet from the user's shell profile.
+#[tauri::command]
+pub fn remove_cli_profile() -> Result<String, String> {
+    let profile = profile_path().ok_or("Could not determine shell profile path")?;
+    let content = std::fs::read_to_string(&profile).map_err(|e| e.to_string())?;
+
+    // Remove lines between the marker comment and the next blank line
+    let marker = "# SessionGraph auto-detect";
+    let mut lines: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        if line.trim() == marker {
+            skipping = true;
+        } else if skipping && line.trim().is_empty() {
+            skipping = false;
+            continue;
+        } else if !skipping {
+            lines.push(line);
+        }
+    }
+    let new_content = lines.join("\n");
+    std::fs::write(&profile, &new_content).map_err(|e| e.to_string())?;
+
+    tracing::info!("CLI auto-detect snippet removed from {}", profile.display());
+    Ok(profile.to_string_lossy().to_string())
+}
+
+/// Get the setup script text for display in onboarding (informational only).
+#[tauri::command]
+pub fn get_setup_script(state: tauri::State<'_, Arc<InterceptState>>) -> String {
+    let port = state.proxy_port;
+    cli_snippet(port)
 }
 
 #[tauri::command]

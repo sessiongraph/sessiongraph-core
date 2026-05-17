@@ -14,7 +14,6 @@ export default function App() {
     void tauri
       .getSettings()
       .then((s) => {
-        // Remember onboarding state in settings store
         const completed = s.onboarding_complete === "true";
         setView(completed ? "dashboard" : "onboarding");
       })
@@ -36,16 +35,17 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background text-text-primary">
-      {/* Top nav — only show on dashboard */}
+      {/* Settings button — only shown on dashboard, inline in the layout */}
       {view === "dashboard" && (
-        <nav className="absolute top-0 right-0 px-8 py-4">
+        <div className="absolute top-0 right-0 z-10 px-6 py-[26px]">
           <button
             onClick={() => setView("settings")}
-            className="rounded px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-text-primary"
+            className="rounded-md px-2.5 py-1 text-xs text-text-secondary/60 transition-colors hover:bg-surface hover:text-text-secondary"
+            aria-label="Settings"
           >
-            Settings
+            ⚙ Settings
           </button>
-        </nav>
+        </div>
       )}
 
       {view === "onboarding" && (

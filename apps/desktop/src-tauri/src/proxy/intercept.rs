@@ -245,9 +245,10 @@ pub async fn handle_anthropic(
     let forward_result =
         forward::forward_anthropic(body, &api_key, state.anthropic_base_url.as_deref()).await?;
     let response = forward_result.response;
-    let token_counter = forward_result.token_count;
+    let input_counter = forward_result.input_token_count;
+    let output_counter = forward_result.output_token_count;
 
-    // 6. Log everything in a single background task (waits for output tokens)
+    // 6. Log everything in a single background task (waits for real token counts)
     let latency_ms = start.elapsed().as_millis() as u64;
     let request_id = Uuid::new_v4().to_string();
     let db = state.db.clone();
@@ -256,14 +257,18 @@ pub async fn handle_anthropic(
     let model_clone = model.clone();
 
     tokio::spawn(async move {
-        // Wait for the byte stream to flush — poll counter until stable
-        let tokens_out = wait_for_output_tokens(&token_counter).await;
+        // Wait for the background SSE parser to finish — poll until non-zero or timeout
+        let (tokens_in_actual, tokens_out) =
+            wait_for_token_counts(&input_counter, &output_counter).await;
+        // Use API-reported input tokens if available, otherwise keep the estimate
+        let tokens_in_sent_final = if tokens_in_actual > 0 {
+            tokens_in_actual
+        } else {
+            tokens_in_sent
+        };
 
         let cost_usd_actual_with_out =
-            forward::compute_cost(&model_clone, tokens_in_sent, tokens_out);
-
-        // Update in-memory session tokens_out
-        // (best-effort — sessions lock might be held; fine if skipped, dashboard updates next poll)
+            forward::compute_cost(&model_clone, tokens_in_sent_final, tokens_out);
 
         // All DB writes in one spawn_blocking call (single TX-equivalent batch)
         let _ = with_db(db, move |conn| {
@@ -276,7 +281,7 @@ pub async fn handle_anthropic(
                 &provider_clone,
                 &model_clone,
                 tokens_in_raw,
-                tokens_in_sent,
+                tokens_in_sent_final,
                 tokens_out,
                 compression_ratio,
                 graph_injected,
@@ -290,7 +295,7 @@ pub async fn handle_anthropic(
                 &today,
                 &provider_clone,
                 tokens_in_raw,
-                tokens_in_sent,
+                tokens_in_sent_final,
                 tokens_out,
                 cost_usd_raw,
                 cost_usd_actual_with_out,
@@ -300,7 +305,7 @@ pub async fn handle_anthropic(
                 &session_id_clone,
                 1,
                 tokens_in_raw,
-                tokens_in_sent,
+                tokens_in_sent_final,
                 tokens_out,
                 cost_usd_raw,
                 cost_usd_actual_with_out,
@@ -426,9 +431,10 @@ pub async fn handle_openai_compatible(
     let forward_result =
         forward::forward_openai_compatible(body, &api_key, &provider, headers).await?;
     let response = forward_result.response;
-    let token_counter = forward_result.token_count;
+    let input_counter = forward_result.input_token_count;
+    let output_counter = forward_result.output_token_count;
 
-    // 6. Log in single background task
+    // 6. Log in single background task (waits for real token counts)
     let latency_ms = start.elapsed().as_millis() as u64;
     let request_id = Uuid::new_v4().to_string();
     let db = state.db.clone();
@@ -437,9 +443,16 @@ pub async fn handle_openai_compatible(
     let model_clone = model.clone();
 
     tokio::spawn(async move {
-        let tokens_out = wait_for_output_tokens(&token_counter).await;
+        let (tokens_in_actual, tokens_out) =
+            wait_for_token_counts(&input_counter, &output_counter).await;
+        // Use API-reported input tokens if available, otherwise keep the estimate
+        let tokens_in_sent_final = if tokens_in_actual > 0 {
+            tokens_in_actual
+        } else {
+            tokens_in_sent
+        };
         let cost_usd_actual_with_out =
-            forward::compute_cost(&model_clone, tokens_in_sent, tokens_out);
+            forward::compute_cost(&model_clone, tokens_in_sent_final, tokens_out);
 
         let _ = with_db(db, move |conn| {
             let today = Utc::now().format("%Y-%m-%d").to_string();
@@ -451,7 +464,7 @@ pub async fn handle_openai_compatible(
                 &provider_clone,
                 &model_clone,
                 tokens_in_raw,
-                tokens_in_sent,
+                tokens_in_sent_final,
                 tokens_out,
                 compression_ratio,
                 graph_injected,
@@ -465,7 +478,7 @@ pub async fn handle_openai_compatible(
                 &today,
                 &provider_clone,
                 tokens_in_raw,
-                tokens_in_sent,
+                tokens_in_sent_final,
                 tokens_out,
                 cost_usd_raw,
                 cost_usd_actual_with_out,
@@ -475,7 +488,7 @@ pub async fn handle_openai_compatible(
                 &session_id_clone,
                 1,
                 tokens_in_raw,
-                tokens_in_sent,
+                tokens_in_sent_final,
                 tokens_out,
                 cost_usd_raw,
                 cost_usd_actual_with_out,
@@ -487,29 +500,40 @@ pub async fn handle_openai_compatible(
     Ok(response)
 }
 
-/// Wait for the output token counter to stabilise.
-/// Polls the atomic counter with exponential backoff up to 5 seconds total.
-async fn wait_for_output_tokens(counter: &std::sync::atomic::AtomicU64) -> u64 {
+/// Wait for the background SSE parser to populate both token counters.
+///
+/// The parser runs in a background task and writes the counts after the
+/// stream closes. We poll with exponential backoff: once the output counter
+/// has been non-zero for at least 800 ms we consider it stable. Total wait
+/// is bounded at ~5 s to avoid blocking the logging task indefinitely.
+///
+/// Returns `(input_tokens, output_tokens)`.
+async fn wait_for_token_counts(
+    input: &std::sync::atomic::AtomicU64,
+    output: &std::sync::atomic::AtomicU64,
+) -> (u64, u64) {
     use std::sync::atomic::Ordering;
 
-    let mut last = counter.load(Ordering::Relaxed);
+    let mut last_out = output.load(Ordering::Relaxed);
     let mut stable_ms = 0u64;
 
     for delay_ms in [50, 100, 200, 400, 800, 800, 800, 800, 800] {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        let current = counter.load(Ordering::Relaxed);
-        if current == last {
+        let current_out = output.load(Ordering::Relaxed);
+        if current_out == last_out {
             stable_ms += delay_ms;
             if stable_ms >= 800 {
                 break;
             }
         } else {
             stable_ms = 0;
-            last = current;
+            last_out = current_out;
         }
     }
 
-    forward::bytes_to_tokens(last)
+    let inp = input.load(Ordering::Relaxed);
+    let out = output.load(Ordering::Relaxed);
+    (inp, out)
 }
 
 /// Manage session lifecycle:

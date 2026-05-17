@@ -1,6 +1,3 @@
-// SessionDetail — session graph viewer. See spec section 6.5.
-// Renders the structured graph as readable cards, not raw JSON.
-
 import { useState, type ReactNode } from "react";
 import { useSessionsStore } from "../stores/sessions";
 import GraphViz from "./GraphViz";
@@ -10,13 +7,7 @@ export default function SessionDetail() {
     useSessionsStore();
   const [showGraph, setShowGraph] = useState(false);
 
-  if (!selectedGraph) {
-    return (
-      <section className="mt-8 text-center text-sm text-text-secondary">
-        Select a session above to view its context graph.
-      </section>
-    );
-  }
+  if (!selectedGraph) return null;
 
   const handleDelete = async () => {
     if (selectedProject) {
@@ -25,24 +16,30 @@ export default function SessionDetail() {
     }
   };
 
+  const decisionCount = arr(selectedGraph.decisions).length;
+  const activeFiles = arr((selectedGraph.files as Record<string, unknown>).active);
+  const readFiles = arr((selectedGraph.files as Record<string, unknown>).read);
+  const createdFiles = arr((selectedGraph.files as Record<string, unknown>).created);
+  const totalFiles = activeFiles.length + readFiles.length + createdFiles.length;
+
   return (
-    <section className="mt-8 space-y-4">
+    <section className="space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-text-secondary">
+        <h2 className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/60">
           Session Graph
         </h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => setShowGraph(!showGraph)}
-            className="rounded px-2 py-1 text-xs text-accent transition-colors hover:bg-accent/10"
+            className="rounded px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/10"
           >
-            {showGraph ? "Card View" : "Graph View"}
+            {showGraph ? "Card view" : "Graph view"}
           </button>
           <button
             onClick={handleDelete}
-            className="rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-red-400"
+            className="rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface hover:text-red-400"
           >
-            Delete graph
+            Delete
           </button>
         </div>
       </div>
@@ -50,84 +47,110 @@ export default function SessionDetail() {
       {showGraph ? (
         <GraphViz graph={selectedGraph} />
       ) : (
-        <>
-          {/* State card */}
-          <GraphCard title="Work State">
-            <Field label="Current task" value={str(selectedGraph.state.current_task)} />
-            <Field label="Progress" value={str(selectedGraph.state.progress)} />
-            {renderList("Next steps", selectedGraph.state.next_steps)}
-            {renderList("Blockers", selectedGraph.state.blockers, "text-amber-400")}
+        <div className="space-y-3">
+          {/* Where you left off */}
+          <GraphCard>
+            <SectionHeader emoji="📍" title="Where you left off" />
+            <div className="mt-3 space-y-2">
+              <Field label="Current task" value={str(selectedGraph.state.current_task)} />
+              <Field label="Progress" value={str(selectedGraph.state.progress)} />
+              {renderList("Next steps", selectedGraph.state.next_steps)}
+              {renderList("Blockers", selectedGraph.state.blockers, "text-amber-400")}
+            </div>
           </GraphCard>
 
-      {/* Decisions card */}
-      {arr(selectedGraph.decisions).length > 0 && (
-        <GraphCard title="Decisions">
-          {arr(selectedGraph.decisions).map((d, i) => (
-            <div
-              key={i}
-              className="mt-2 border-t border-border pt-2 first:mt-0 first:border-0 first:pt-0"
-            >
-              <p className="text-sm font-medium text-text-primary">
-                {str((d as Record<string, unknown>).topic)}
-              </p>
-              <p className="text-sm text-text-secondary">
-                {str((d as Record<string, unknown>).decision)}
-              </p>
-              {(d as Record<string, unknown>).rationale != null && (
-                <p className="mt-0.5 text-xs italic text-text-secondary/70">
-                  {str((d as Record<string, unknown>).rationale)}
-                </p>
-              )}
-            </div>
-          ))}
-        </GraphCard>
-      )}
-
-      {/* Conventions card */}
-      <GraphCard title="Conventions">
-        <Field label="Naming" value={str(selectedGraph.conventions.naming)} />
-        <Field label="Structure" value={str(selectedGraph.conventions.structure)} />
-        {renderList("Patterns", selectedGraph.conventions.patterns)}
-      </GraphCard>
-
-      {/* Files card */}
-      <GraphCard title="Files">
-        <FileList label="Active" files={selectedGraph.files.active} />
-        <FileList label="Read" files={selectedGraph.files.read} />
-        <FileList label="Created" files={selectedGraph.files.created} />
-      </GraphCard>
-
-      {/* Errors card */}
-      {arr(selectedGraph.errors).length > 0 && (
-        <GraphCard title="Errors">
-          {arr(selectedGraph.errors).map((e, i) => {
-            const err = e as Record<string, unknown>;
-            return (
-              <div
-                key={i}
-                className="mt-2 border-t border-border pt-2 first:mt-0 first:border-0 first:pt-0"
-              >
-                {err.file != null && (
-                  <p className="font-mono text-xs text-accent">{str(err.file)}</p>
-                )}
-                <p className="text-sm text-text-primary">{str(err.description)}</p>
-                {err.resolution != null && (
-                  <p className="mt-0.5 text-xs text-success">
-                    Resolved: {str(err.resolution)}
-                  </p>
-                )}
+          {/* Decisions */}
+          {decisionCount > 0 && (
+            <GraphCard>
+              <SectionHeader
+                emoji="✅"
+                title="Decisions made"
+                count={decisionCount}
+              />
+              <div className="mt-3 divide-y divide-border">
+                {arr(selectedGraph.decisions).map((d, i) => {
+                  const decision = d as Record<string, unknown>;
+                  return (
+                    <div key={i} className="py-2.5 first:pt-0 last:pb-0">
+                      <p className="text-sm font-medium text-text-primary">
+                        {str(decision.topic)}
+                      </p>
+                      <p className="text-sm text-text-secondary mt-0.5">
+                        {str(decision.decision)}
+                      </p>
+                      {decision.rationale != null && (
+                        <p className="mt-1 text-xs italic text-text-secondary/60">
+                          {str(decision.rationale)}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </GraphCard>
-      )}
+            </GraphCard>
+          )}
 
-      {/* Meta */}
-      <p className="text-center text-xs text-text-secondary/50">
-        v{selectedGraph.sg_version} · {selectedGraph.token_count} tokens ·{" "}
-        extracted {fmtDate(selectedGraph.created_at)}
-      </p>
-        </>
+          {/* Files */}
+          {totalFiles > 0 && (
+            <GraphCard>
+              <SectionHeader emoji="📁" title="Active files" count={totalFiles} />
+              <div className="mt-3 space-y-2">
+                <FileChips label="Active" files={(selectedGraph.files as Record<string, unknown>).active} />
+                <FileChips label="Read" files={(selectedGraph.files as Record<string, unknown>).read} />
+                <FileChips label="Created" files={(selectedGraph.files as Record<string, unknown>).created} />
+              </div>
+            </GraphCard>
+          )}
+
+          {/* Conventions */}
+          <GraphCard>
+            <SectionHeader emoji="🔧" title="Conventions" />
+            <div className="mt-3 space-y-2">
+              <Field label="Naming" value={str(selectedGraph.conventions.naming)} />
+              <Field label="Structure" value={str(selectedGraph.conventions.structure)} />
+              {renderList("Patterns", selectedGraph.conventions.patterns)}
+            </div>
+          </GraphCard>
+
+          {/* Errors — only if present */}
+          {arr(selectedGraph.errors).length > 0 && (
+            <GraphCard>
+              <SectionHeader
+                emoji="⚠️"
+                title="Errors"
+                count={arr(selectedGraph.errors).length}
+              />
+              <div className="mt-3 divide-y divide-border">
+                {arr(selectedGraph.errors).map((e, i) => {
+                  const err = e as Record<string, unknown>;
+                  return (
+                    <div key={i} className="py-2.5 first:pt-0 last:pb-0">
+                      {err.file != null && (
+                        <p className="font-mono text-xs text-accent mb-0.5">
+                          {str(err.file)}
+                        </p>
+                      )}
+                      <p className="text-sm text-text-primary">
+                        {str(err.description)}
+                      </p>
+                      {err.resolution != null && (
+                        <p className="mt-0.5 text-xs text-success">
+                          Resolved: {str(err.resolution)}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </GraphCard>
+          )}
+
+          {/* Footer */}
+          <p className="text-center text-[10px] text-text-secondary/40 tabular-nums">
+            {selectedGraph.token_count} tokens · extracted{" "}
+            {fmtDate(selectedGraph.created_at)} · v{selectedGraph.sg_version}
+          </p>
+        </div>
       )}
     </section>
   );
@@ -137,14 +160,13 @@ export default function SessionDetail() {
 
 function str(v: unknown): string {
   if (v == null) return "—";
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return v.map((x) => String(x)).join(", ");
+  if (typeof v === "string") return v || "—";
+  if (Array.isArray(v)) return v.map(String).join(", ");
   return String(v);
 }
 
 function arr(v: unknown): unknown[] {
-  if (Array.isArray(v)) return v;
-  return [];
+  return Array.isArray(v) ? v : [];
 }
 
 function fmtDate(iso: string): string {
@@ -161,9 +183,13 @@ function fmtDate(iso: string): string {
 function renderList(label: string, value: unknown, textClass?: string): ReactNode {
   if (!Array.isArray(value) || value.length === 0) return null;
   return (
-    <div className="mt-2">
-      <span className="text-xs text-text-secondary">{label}</span>
-      <ul className={`mt-1 list-inside list-disc text-sm ${textClass ?? "text-text-primary"}`}>
+    <div>
+      <p className="text-xs text-text-secondary/60 mb-1">{label}</p>
+      <ul
+        className={`list-inside list-disc text-sm space-y-0.5 ${
+          textClass ?? "text-text-primary"
+        }`}
+      >
         {(value as string[]).map((item, i) => (
           <li key={i}>{String(item)}</li>
         ))}
@@ -174,32 +200,52 @@ function renderList(label: string, value: unknown, textClass?: string): ReactNod
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
-function GraphCard({ title, children }: { title: string; children: ReactNode }) {
+function GraphCard({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-border bg-surface p-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-        {title}
-      </h3>
-      <div className="mt-2">{children}</div>
+    <div className="rounded-lg border border-border bg-surface px-5 py-4">
+      {children}
+    </div>
+  );
+}
+
+function SectionHeader({
+  emoji,
+  title,
+  count,
+}: {
+  emoji: string;
+  title: string;
+  count?: number;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-base leading-none">{emoji}</span>
+      <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+      {count !== undefined && count > 0 && (
+        <span className="rounded-full bg-border px-1.5 py-0.5 text-[9px] text-text-secondary tabular-nums">
+          {count}
+        </span>
+      )}
     </div>
   );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
+  if (!value || value === "—") return null;
   return (
-    <div className="mt-1 first:mt-0">
-      <span className="text-xs text-text-secondary">{label}:</span>{" "}
+    <div>
+      <span className="text-xs text-text-secondary/60">{label}: </span>
       <span className="text-sm text-text-primary">{value}</span>
     </div>
   );
 }
 
-function FileList({ label, files }: { label: string; files: unknown }) {
+function FileChips({ label, files }: { label: string; files: unknown }) {
   if (!Array.isArray(files) || files.length === 0) return null;
   return (
-    <div className="mt-2 first:mt-0">
-      <span className="text-xs text-text-secondary">{label}</span>
-      <div className="mt-1 flex flex-wrap gap-1">
+    <div>
+      <p className="text-xs text-text-secondary/60 mb-1">{label}</p>
+      <div className="flex flex-wrap gap-1">
         {(files as string[]).map((f, i) => (
           <code
             key={i}

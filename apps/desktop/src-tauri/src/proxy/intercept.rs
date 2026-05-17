@@ -274,20 +274,29 @@ pub async fn handle_openai_compatible(
     base_url_override: Option<&str>,
 ) -> Result<Response, ForwardError> {
     let provider = if let Some(url) = base_url_override {
+        // Explicit header override always wins
         Provider::OpenAICompatible { base_url: url.to_string() }
     } else {
-        // Check settings for a custom OpenAI-compatible base URL
-        let configured_url = state.db.lock().ok().and_then(|db| {
-            queries::get_setting(&db, "openai_base_url").ok().flatten()
-        });
-        if let Some(ref url) = configured_url {
-            if url != "https://api.openai.com/v1" {
-                Provider::OpenAICompatible { base_url: url.clone() }
-            } else {
-                forward::detect_provider(headers)
+        let detected = forward::detect_provider(headers);
+        // Only override generic OpenAI to the configured base URL.
+        // OpenRouter (sk-or-v1-*) and Anthropic (sk-ant-*) keys still route
+        // to their correct upstreams regardless of the openai_base_url setting.
+        match &detected {
+            Provider::OpenAI => {
+                let configured_url = state.db.lock().ok().and_then(|db| {
+                    queries::get_setting(&db, "openai_base_url").ok().flatten()
+                });
+                if let Some(ref url) = configured_url {
+                    if url != "https://api.openai.com/v1" {
+                        Provider::OpenAICompatible { base_url: url.clone() }
+                    } else {
+                        detected
+                    }
+                } else {
+                    detected
+                }
             }
-        } else {
-            forward::detect_provider(headers)
+            _ => detected, // OpenRouter, Anthropic — don't touch
         }
     };
     let provider_str = provider.as_str().to_string();

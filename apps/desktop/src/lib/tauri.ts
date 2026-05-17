@@ -91,6 +91,11 @@ export type DailyTokenUsage = {
   tokens_sent: number;
 };
 
+export type SystemProxyStatus = {
+  enabled: boolean;
+  pac_file_path: string;
+};
+
 // --- Commands -------------------------------------------------------------
 
 export const tauri = {
@@ -127,4 +132,8 @@ export const tauri = {
   // venv / compression
   checkVenvStatus: () => invoke<VenvStatus>("check_venv_status"),
   setupVenv: () => invoke<string>("setup_venv"),
+
+  // system proxy
+  getSystemProxyStatus: () => invoke<SystemProxyStatus>("get_system_proxy_status"),
+  setSystemProxy: (enabled: boolean) => invoke<void>("set_system_proxy", { enabled }),
 };

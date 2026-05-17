@@ -74,6 +74,7 @@ INSERT INTO settings (key, value) VALUES
   ('compression_enabled', 'true'),
   ('graph_injection_enabled', 'true'),
   ('graph_max_tokens', '500'),
+  ('openai_base_url', 'https://api.openai.com/v1'),
   ('tier', 'free'),
   ('sessions_saved_this_month', '0'),
   ('onboarding_complete', 'false');

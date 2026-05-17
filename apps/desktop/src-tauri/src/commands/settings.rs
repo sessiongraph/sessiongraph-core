@@ -37,6 +37,7 @@ pub fn get_settings(
             s.insert("compression_enabled".into(), "true".into());
             s.insert("graph_injection_enabled".into(), "true".into());
             s.insert("graph_max_tokens".into(), "500".into());
+            s.insert("openai_base_url".into(), "https://api.openai.com/v1".into());
             s.insert("tier".into(), "free".into());
             s.insert("sessions_saved_this_month".into(), "0".into());
             s.insert("onboarding_complete".into(), "false".into());
@@ -50,6 +51,7 @@ pub fn get_settings(
         ("compression_enabled", "true"),
         ("graph_injection_enabled", "true"),
         ("graph_max_tokens", "500"),
+        ("openai_base_url", "https://api.openai.com/v1"),
         ("tier", "free"),
         ("sessions_saved_this_month", "0"),
         ("onboarding_complete", "false"),

@@ -9,6 +9,7 @@ const DEFAULTS: Record<string, string> = {
   compression_enabled: "true",
   graph_injection_enabled: "true",
   graph_max_tokens: "500",
+  openai_base_url: "https://api.openai.com/v1",
   tier: "free",
   sessions_saved_this_month: "0",
   onboarding_complete: "false",
@@ -20,6 +21,7 @@ const LABELS: Record<string, string> = {
   compression_enabled: "Compression",
   graph_injection_enabled: "Graph injection",
   graph_max_tokens: "Max graph tokens",
+  openai_base_url: "OpenAI-compatible upstream URL",
 };
 
 interface Props {
@@ -125,6 +127,20 @@ export default function Settings({ onClose }: Props) {
             {settings.graph_max_tokens ?? "500"} tokens
           </span>
         </SettingRow>
+
+        {/* Upstream URL */}
+        <SettingRow label={LABELS.openai_base_url!}>
+          <input
+            type="text"
+            value={settings.openai_base_url ?? "https://api.openai.com/v1"}
+            onChange={(e) => update("openai_base_url", e.target.value)}
+            className="rounded border border-border bg-background px-3 py-1.5 font-mono text-xs text-text-primary w-56"
+            placeholder="https://api.openai.com/v1"
+          />
+        </SettingRow>
+        <p className="-mt-3 text-xs text-text-secondary/60 ml-[1px]">
+          Set to https://api.deepseek.com/v1 for DeepSeek, or any OpenAI-compatible endpoint.
+        </p>
       </div>
 
       {/* Account info */}

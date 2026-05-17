@@ -391,9 +391,11 @@ pub fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
         } else if m.contains("o3") || m.contains("o1") {
             (15.0, 60.0)
         }
-        // OpenRouter free models
-        else if m.contains("deepseek") {
-            (0.0, 0.0) // DeepSeek is often free on OpenRouter
+        // DeepSeek models (direct or via OpenRouter)
+        else if m.contains("deepseek") && (m.contains("reasoner") || m.contains("r1")) {
+            (0.55, 2.19) // DeepSeek-R1
+        } else if m.contains("deepseek") {
+            (0.27, 1.10) // DeepSeek-V3 / deepseek-chat
         } else if m.contains("gemini") && (m.contains("flash") || m.contains("1.5")) {
             (0.075, 0.30) // Gemini Flash via OpenRouter
         } else if m.contains("gemini") {

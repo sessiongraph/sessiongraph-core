@@ -75,6 +75,7 @@ struct StatsResponse {
     today: TodayStatsResponse,
     total: TotalStatsResponse,
     current_session: Option<CurrentSessionResponse>,
+    active_sessions: Vec<CurrentSessionResponse>,
 }
 
 #[derive(Serialize)]
@@ -92,13 +93,15 @@ struct TotalStatsResponse {
     sessions: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct CurrentSessionResponse {
     id: String,
     active: bool,
     tokens_in_raw: u64,
     tokens_in_sent: u64,
     compression_ratio: f64,
+    provider: String,
+    project_name: Option<String>,
 }
 
 /// `GET /stats` — live dashboard stats.
@@ -116,9 +119,9 @@ async fn stats_handler(State(state): State<Arc<InterceptState>>) -> Json<StatsRe
         }
     };
 
-    let current_session = {
+    let (current_session, active_sessions) = {
         let sessions = state.active_sessions.lock().await;
-        sessions.first().map(|s| CurrentSessionResponse {
+        let all: Vec<CurrentSessionResponse> = sessions.iter().map(|s| CurrentSessionResponse {
             id: s.id.clone(),
             active: true,
             tokens_in_raw: s.tokens_in_raw,
@@ -128,7 +131,11 @@ async fn stats_handler(State(state): State<Arc<InterceptState>>) -> Json<StatsRe
             } else {
                 0.0
             },
-        })
+            provider: s.provider.clone(),
+            project_name: s.project_name.clone(),
+        }).collect();
+        let first = all.first().cloned();
+        (first, all)
     };
 
     Json(StatsResponse {
@@ -144,6 +151,7 @@ async fn stats_handler(State(state): State<Arc<InterceptState>>) -> Json<StatsRe
             sessions: total_stats.as_ref().map_or(0, |t| t.sessions),
         },
         current_session,
+        active_sessions,
     })
 }
 

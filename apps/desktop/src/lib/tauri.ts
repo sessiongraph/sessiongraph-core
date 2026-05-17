@@ -16,6 +16,7 @@ export type DashboardStats = {
     sessions: number;
   };
   current_session: CurrentSession | null;
+  active_sessions: CurrentSession[];
 };
 
 export type CurrentSession = {
@@ -24,6 +25,8 @@ export type CurrentSession = {
   tokens_in_raw: number;
   tokens_in_sent: number;
   compression_ratio: number;
+  provider: string;
+  project_name: string | null;
 };
 
 export type SessionSummary = {

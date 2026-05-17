@@ -276,7 +276,19 @@ pub async fn handle_openai_compatible(
     let provider = if let Some(url) = base_url_override {
         Provider::OpenAICompatible { base_url: url.to_string() }
     } else {
-        forward::detect_provider(headers)
+        // Check settings for a custom OpenAI-compatible base URL
+        let configured_url = state.db.lock().ok().and_then(|db| {
+            queries::get_setting(&db, "openai_base_url").ok().flatten()
+        });
+        if let Some(ref url) = configured_url {
+            if url != "https://api.openai.com/v1" {
+                Provider::OpenAICompatible { base_url: url.clone() }
+            } else {
+                forward::detect_provider(headers)
+            }
+        } else {
+            forward::detect_provider(headers)
+        }
     };
     let provider_str = provider.as_str().to_string();
     let start = Instant::now();

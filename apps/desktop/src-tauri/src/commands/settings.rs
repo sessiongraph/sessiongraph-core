@@ -24,9 +24,7 @@ pub struct HealthStatus {
 }
 
 #[tauri::command]
-pub fn get_settings(
-    state: tauri::State<'_, Arc<InterceptState>>,
-) -> HashMap<String, String> {
+pub fn get_settings(state: tauri::State<'_, Arc<InterceptState>>) -> HashMap<String, String> {
     let db = match state.db.lock() {
         Ok(d) => d,
         Err(_) => {
@@ -37,7 +35,11 @@ pub fn get_settings(
             s.insert("compression_enabled".into(), "true".into());
             s.insert("graph_injection_enabled".into(), "true".into());
             s.insert("graph_max_tokens".into(), "500".into());
-            s.insert("openai_base_url".into(), "https://api.openai.com/v1".into());
+            s.insert(
+                "anthropic_base_url".into(),
+                "https://api.anthropic.com".into(),
+            );
+            s.insert("openai_base_url".into(), "https://api.openai.com".into());
             s.insert("tier".into(), "free".into());
             s.insert("sessions_saved_this_month".into(), "0".into());
             s.insert("onboarding_complete".into(), "false".into());
@@ -51,7 +53,8 @@ pub fn get_settings(
         ("compression_enabled", "true"),
         ("graph_injection_enabled", "true"),
         ("graph_max_tokens", "500"),
-        ("openai_base_url", "https://api.openai.com/v1"),
+        ("anthropic_base_url", "https://api.anthropic.com"),
+        ("openai_base_url", "https://api.openai.com"),
         ("tier", "free"),
         ("sessions_saved_this_month", "0"),
         ("onboarding_complete", "false"),
@@ -69,23 +72,17 @@ pub fn get_settings(
 }
 
 #[tauri::command]
-pub fn update_setting(
-    state: tauri::State<'_, Arc<InterceptState>>,
-    key: String,
-    value: String,
-) {
+pub fn update_setting(state: tauri::State<'_, Arc<InterceptState>>, key: String, value: String) {
     if let Ok(db) = state.db.lock() {
         let _ = queries::set_setting(&db, &key, &value);
     }
 }
 
 #[tauri::command]
-pub fn get_proxy_status(
-    state: tauri::State<'_, Arc<InterceptState>>,
-) -> ProxyStatus {
+pub fn get_proxy_status(state: tauri::State<'_, Arc<InterceptState>>) -> ProxyStatus {
     ProxyStatus {
         running: true, // proxy is always running while the app is open
-        port: 4200,
+        port: state.proxy_port,
         uptime_seconds: state.start_time.elapsed().as_secs(),
     }
 }
@@ -103,21 +100,23 @@ pub async fn restart_proxy(
 }
 
 #[tauri::command]
-pub fn get_setup_script() -> String {
-    // Generate the appropriate script for the detected OS
+pub fn get_setup_script(state: tauri::State<'_, Arc<InterceptState>>) -> String {
+    let port = state.proxy_port;
     if cfg!(windows) {
-        "# Run this in PowerShell as Administrator:\n\
-         [System.Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL','http://localhost:4200','User')\n\
-         [System.Environment]::SetEnvironmentVariable('OPENAI_BASE_URL','http://localhost:4200/v1','User')\n\
-         \n# Restart your terminal for changes to take effect.\n"
-            .to_string()
+        format!(
+            "# Run this in PowerShell as Administrator:\n\
+             [System.Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL','http://localhost:{port}','User')\n\
+             [System.Environment]::SetEnvironmentVariable('OPENAI_BASE_URL','http://localhost:{port}/v1','User')\n\
+             \n# Restart your terminal for changes to take effect.\n"
+        )
     } else {
-        "# Run this in your terminal:\n\
-         echo 'export ANTHROPIC_BASE_URL=http://localhost:4200' >> ~/.zshrc\n\
-         echo 'export OPENAI_BASE_URL=http://localhost:4200/v1' >> ~/.zshrc\n\
-         source ~/.zshrc\n\
-         \n# Or substitute ~/.bashrc if you use bash.\n"
-            .to_string()
+        format!(
+            "# Run this in your terminal:\n\
+             echo 'export ANTHROPIC_BASE_URL=http://localhost:{port}' >> ~/.zshrc\n\
+             echo 'export OPENAI_BASE_URL=http://localhost:{port}/v1' >> ~/.zshrc\n\
+             source ~/.zshrc\n\
+             \n# Or substitute ~/.bashrc if you use bash.\n"
+        )
     }
 }
 
@@ -131,14 +130,17 @@ pub async fn check_proxy_health(
         .build()
         .map_err(|e| e.to_string())?;
 
-    match client.get("http://127.0.0.1:4200/health").send().await {
-        Ok(response) if response.status().is_success() => {
-            Ok(HealthStatus {
-                status: "healthy",
-                proxy_version: env!("CARGO_PKG_VERSION"),
-                uptime_seconds: state.start_time.elapsed().as_secs(),
-            })
-        }
+    let port = state.proxy_port;
+    match client
+        .get(format!("http://127.0.0.1:{port}/health"))
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => Ok(HealthStatus {
+            status: "healthy",
+            proxy_version: env!("CARGO_PKG_VERSION"),
+            uptime_seconds: state.start_time.elapsed().as_secs(),
+        }),
         Ok(response) => {
             tracing::warn!("Proxy health check returned status: {}", response.status());
             Err(format!("Proxy returned status: {}", response.status()))
@@ -160,8 +162,7 @@ pub struct VenvStatus {
 #[tauri::command]
 pub async fn check_venv_status() -> Result<VenvStatus, String> {
     let ready = crate::venv::venv_ready().await;
-    let python_path = crate::venv::python_executable()
-        .map(|p| p.to_string_lossy().to_string());
+    let python_path = crate::venv::python_executable().map(|p| p.to_string_lossy().to_string());
 
     Ok(VenvStatus { ready, python_path })
 }
@@ -179,13 +180,19 @@ pub async fn setup_venv() -> Result<String, String> {
     crate::venv::setup_venv().await
 }
 
-/// Delete all session data from the database.
+/// Delete all session data from the database and clear in-memory state.
 #[tauri::command]
-pub fn delete_all_data(
-    state: tauri::State<'_, Arc<InterceptState>>,
-) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::db::queries::delete_all_data(&db).map_err(|e| e.to_string())?;
+pub async fn delete_all_data(state: tauri::State<'_, Arc<InterceptState>>) -> Result<(), String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::queries::delete_all_data(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    // Also clear in-memory active sessions
+    state.active_sessions.lock().await.clear();
     tracing::info!("All session data deleted");
     Ok(())
 }

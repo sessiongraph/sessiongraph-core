@@ -108,9 +108,7 @@ pub fn inject(
 /// Handles both string and content-block-array formats.
 fn build_anthropic_system(existing: Option<Value>, context_block: &str) -> Value {
     match existing {
-        Some(Value::String(s)) => {
-            Value::String(format!("{}\n\n{}", context_block, s))
-        }
+        Some(Value::String(s)) => Value::String(format!("{}\n\n{}", context_block, s)),
         Some(Value::Array(blocks)) => {
             // Content block array — prepend a text block
             let mut new_blocks = vec![serde_json::json!({
@@ -128,9 +126,7 @@ fn build_anthropic_system(existing: Option<Value>, context_block: &str) -> Value
                 other.as_str().unwrap_or("")
             ))
         }
-        None => {
-            Value::String(context_block.to_string())
-        }
+        None => Value::String(context_block.to_string()),
     }
 }
 
@@ -138,9 +134,7 @@ fn build_anthropic_system(existing: Option<Value>, context_block: &str) -> Value
 /// Handles both string and content-part-array formats.
 fn build_openai_content(existing: Option<Value>, context_block: &str) -> Value {
     match existing {
-        Some(Value::String(s)) => {
-            Value::String(format!("{}\n\n{}", context_block, s))
-        }
+        Some(Value::String(s)) => Value::String(format!("{}\n\n{}", context_block, s)),
         Some(Value::Array(parts)) => {
             let mut new_parts = vec![serde_json::json!({
                 "type": "text",
@@ -149,16 +143,12 @@ fn build_openai_content(existing: Option<Value>, context_block: &str) -> Value {
             new_parts.extend(parts);
             Value::Array(new_parts)
         }
-        Some(other) => {
-            Value::String(format!(
-                "{}\n\n{}",
-                context_block,
-                other.as_str().unwrap_or("")
-            ))
-        }
-        None => {
-            Value::String(context_block.to_string())
-        }
+        Some(other) => Value::String(format!(
+            "{}\n\n{}",
+            context_block,
+            other.as_str().unwrap_or("")
+        )),
+        None => Value::String(context_block.to_string()),
     }
 }
 

@@ -1,6 +1,6 @@
 // Settings — settings panel. See spec section 6.7.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { tauri, type Settings as SettingsType } from "../lib/tauri";
 
 const DEFAULTS: Record<string, string> = {
@@ -9,7 +9,8 @@ const DEFAULTS: Record<string, string> = {
   compression_enabled: "true",
   graph_injection_enabled: "true",
   graph_max_tokens: "500",
-  openai_base_url: "https://api.openai.com/v1",
+  anthropic_base_url: "https://api.anthropic.com",
+  openai_base_url: "https://api.openai.com",
   tier: "free",
   sessions_saved_this_month: "0",
   onboarding_complete: "false",
@@ -21,6 +22,7 @@ const LABELS: Record<string, string> = {
   compression_enabled: "Compression",
   graph_injection_enabled: "Graph injection",
   graph_max_tokens: "Max graph tokens",
+  anthropic_base_url: "Anthropic upstream URL",
   openai_base_url: "OpenAI-compatible upstream URL",
 };
 
@@ -33,17 +35,28 @@ export default function Settings({ onClose }: Props) {
   const [saved, setSaved] = useState(false);
   const [appVersion, setAppVersion] = useState("…");
   const [deleting, setDeleting] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     void tauri.getSettings().then(setSettings);
     void tauri.getAppVersion().then(setAppVersion);
   }, []);
 
-  const update = async (key: string, value: string) => {
+  const update = (key: string, value: string) => {
     setSettings((s) => ({ ...s, [key]: value }));
-    await tauri.updateSetting(key, value);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    pendingRef.current[key] = value;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const pending = { ...pendingRef.current };
+      pendingRef.current = {};
+      void Promise.all(
+        Object.entries(pending).map(([k, v]) => tauri.updateSetting(k, v)),
+      ).then(() => {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 1500);
+      });
+    }, 300);
   };
 
   const handleReset = async () => {
@@ -128,18 +141,29 @@ export default function Settings({ onClose }: Props) {
           </span>
         </SettingRow>
 
-        {/* Upstream URL */}
+        {/* Anthropic URL */}
+        <SettingRow label={LABELS.anthropic_base_url!}>
+          <input
+            type="text"
+            value={settings.anthropic_base_url ?? "https://api.anthropic.com"}
+            onChange={(e) => update("anthropic_base_url", e.target.value)}
+            className="rounded border border-border bg-background px-3 py-1.5 font-mono text-xs text-text-primary w-56"
+            placeholder="https://api.anthropic.com"
+          />
+        </SettingRow>
+
+        {/* OpenAI-compatible URL */}
         <SettingRow label={LABELS.openai_base_url!}>
           <input
             type="text"
-            value={settings.openai_base_url ?? "https://api.openai.com/v1"}
+            value={settings.openai_base_url ?? "https://api.openai.com"}
             onChange={(e) => update("openai_base_url", e.target.value)}
             className="rounded border border-border bg-background px-3 py-1.5 font-mono text-xs text-text-primary w-56"
-            placeholder="https://api.openai.com/v1"
+            placeholder="https://api.openai.com"
           />
         </SettingRow>
         <p className="-mt-3 text-xs text-text-secondary/60 ml-[1px]">
-          Set to https://api.deepseek.com/v1 for DeepSeek, or any OpenAI-compatible endpoint.
+          Set to a provider base URL (e.g. https://api.deepseek.com) for any OpenAI-compatible endpoint. Path is appended automatically.
         </p>
       </div>
 

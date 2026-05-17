@@ -29,19 +29,40 @@ mod db_tests {
     #[test]
     fn settings_defaults_on_fresh_db() {
         let db = test_db();
-        assert_eq!(queries::get_setting(&db, "proxy_port").unwrap(), Some("4200".into()));
-        assert_eq!(queries::get_setting(&db, "session_timeout_minutes").unwrap(), Some("30".into()));
-        assert_eq!(queries::get_setting(&db, "compression_enabled").unwrap(), Some("true".into()));
-        assert_eq!(queries::get_setting(&db, "graph_max_tokens").unwrap(), Some("500".into()));
-        assert_eq!(queries::get_setting(&db, "tier").unwrap(), Some("free".into()));
-        assert_eq!(queries::get_setting(&db, "onboarding_complete").unwrap(), Some("false".into()));
+        assert_eq!(
+            queries::get_setting(&db, "proxy_port").unwrap(),
+            Some("4200".into())
+        );
+        assert_eq!(
+            queries::get_setting(&db, "session_timeout_minutes").unwrap(),
+            Some("30".into())
+        );
+        assert_eq!(
+            queries::get_setting(&db, "compression_enabled").unwrap(),
+            Some("true".into())
+        );
+        assert_eq!(
+            queries::get_setting(&db, "graph_max_tokens").unwrap(),
+            Some("500".into())
+        );
+        assert_eq!(
+            queries::get_setting(&db, "tier").unwrap(),
+            Some("free".into())
+        );
+        assert_eq!(
+            queries::get_setting(&db, "onboarding_complete").unwrap(),
+            Some("false".into())
+        );
     }
 
     #[test]
     fn settings_read_write() {
         let db = test_db();
         queries::set_setting(&db, "proxy_port", "8080").unwrap();
-        assert_eq!(queries::get_setting(&db, "proxy_port").unwrap(), Some("8080".into()));
+        assert_eq!(
+            queries::get_setting(&db, "proxy_port").unwrap(),
+            Some("8080".into())
+        );
     }
 
     #[test]
@@ -85,7 +106,9 @@ mod db_tests {
     #[test]
     fn get_session_by_id_returns_none_for_missing() {
         let db = test_db();
-        assert!(queries::get_session_by_id(&db, "nonexistent").unwrap().is_none());
+        assert!(queries::get_session_by_id(&db, "nonexistent")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -173,17 +196,41 @@ mod db_tests {
         let s = test_session("deadbeef00000005", "anthropic");
         queries::insert_session(&db, &s).unwrap();
 
-        queries::upsert_session_graph(&db, "g1", &s.id, "deadbeef00000005", r#"{"v":1}"#, 10, "haiku", 0.0001).unwrap();
-        queries::upsert_session_graph(&db, "g2", &s.id, "deadbeef00000005", r#"{"v":2}"#, 10, "haiku", 0.0001).unwrap();
+        queries::upsert_session_graph(
+            &db,
+            "g1",
+            &s.id,
+            "deadbeef00000005",
+            r#"{"v":1}"#,
+            10,
+            "haiku",
+            0.0001,
+        )
+        .unwrap();
+        queries::upsert_session_graph(
+            &db,
+            "g2",
+            &s.id,
+            "deadbeef00000005",
+            r#"{"v":2}"#,
+            10,
+            "haiku",
+            0.0001,
+        )
+        .unwrap();
 
-        let retrieved = queries::get_latest_graph_json(&db, "deadbeef00000005").unwrap().unwrap();
+        let retrieved = queries::get_latest_graph_json(&db, "deadbeef00000005")
+            .unwrap()
+            .unwrap();
         assert!(retrieved.contains(r#""v":2"#));
     }
 
     #[test]
     fn get_latest_graph_json_returns_none_for_unknown_project() {
         let db = test_db();
-        assert!(queries::get_latest_graph_json(&db, "nope").unwrap().is_none());
+        assert!(queries::get_latest_graph_json(&db, "nope")
+            .unwrap()
+            .is_none());
     }
 
     // ── Daily usage ──────────────────────────────────────────────────
@@ -194,7 +241,8 @@ mod db_tests {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
         queries::upsert_daily_usage(&db, &today, "anthropic", 500, 200, 300, 0.002, 0.001).unwrap();
-        queries::upsert_daily_usage(&db, &today, "anthropic", 300, 100, 200, 0.001, 0.0005).unwrap();
+        queries::upsert_daily_usage(&db, &today, "anthropic", 300, 100, 200, 0.001, 0.0005)
+            .unwrap();
 
         // Second upsert should sum into the same row
         let rows = queries::get_token_usage_last_n_days(&db, 1).unwrap();
@@ -220,6 +268,9 @@ mod db_tests {
         assert_eq!(total, 0);
 
         // Settings preserved
-        assert_eq!(queries::get_setting(&db, "proxy_port").unwrap(), Some("9999".into()));
+        assert_eq!(
+            queries::get_setting(&db, "proxy_port").unwrap(),
+            Some("9999".into())
+        );
     }
 }

@@ -51,11 +51,6 @@ export type SessionPage = {
   total: number;
 };
 
-export type SessionDetail = SessionSummary & {
-  message_count: number;
-  tokens_out: number;
-};
-
 export type SessionGraph = {
   sg_version: string;
   session_id: string;
@@ -108,7 +103,7 @@ export const tauri = {
   // sessions
   listSessions: (page: number, perPage: number) =>
     invoke<SessionPage>("list_sessions", { page, perPage }),
-  getSession: (id: string) => invoke<SessionDetail>("get_session", { id }),
+  getSession: (id: string) => invoke<SessionSummary | null>("get_session", { id }),
   getSessionGraph: (projectHash: string) =>
     invoke<SessionGraph | null>("get_session_graph", { projectHash }),
   deleteSessionGraph: (projectHash: string) =>

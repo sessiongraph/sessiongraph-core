@@ -74,7 +74,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('compression_enabled', 'true'),
   ('graph_injection_enabled', 'true'),
   ('graph_max_tokens', '500'),
-  ('openai_base_url', 'https://api.openai.com/v1'),
+   ('anthropic_base_url', 'https://api.anthropic.com'),
+   ('openai_base_url', 'https://api.openai.com'),
   ('tier', 'free'),
   ('sessions_saved_this_month', '0'),
   ('onboarding_complete', 'false');

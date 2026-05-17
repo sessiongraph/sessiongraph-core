@@ -1,7 +1,7 @@
 // Onboarding — 4-step setup wizard. See spec section 6.6.
 
 import { useState, useEffect } from "react";
-import { tauri, type HealthStatus, type VenvStatus } from "../lib/tauri";
+import { tauri, type HealthStatus, type VenvStatus, type ProxyStatus } from "../lib/tauri";
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -13,6 +13,7 @@ export default function Onboarding({ onComplete }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [script, setScript] = useState("");
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [, setVenvStatus] = useState<VenvStatus | null>(null);
   const [venvSetupDone, setVenvSetupDone] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -20,6 +21,7 @@ export default function Onboarding({ onComplete }: Props) {
 
   useEffect(() => {
     void tauri.getSetupScript().then(setScript);
+    void tauri.getProxyStatus().then(setProxyStatus);
     // Also check venv status on mount
     void tauri.checkVenvStatus().then(setVenvStatus);
   }, []);
@@ -146,7 +148,7 @@ export default function Onboarding({ onComplete }: Props) {
                 <div>
                   <p className="text-3xl text-success">✓</p>
                   <p className="mt-2 text-sm text-success">
-                    Proxy is running on port 4200
+                    Proxy is running on port {proxyStatus?.port ?? 4200}
                   </p>
                   <p className="mt-1 text-xs text-text-secondary">
                     v{health.proxy_version} · uptime {health.uptime_seconds}s

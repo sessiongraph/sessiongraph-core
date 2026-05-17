@@ -38,7 +38,9 @@ pub enum Provider {
     OpenAI,
     OpenRouter,
     /// Catch-all for any OpenAI-compatible endpoint.
-    OpenAICompatible { base_url: String },
+    OpenAICompatible {
+        base_url: String,
+    },
 }
 
 impl Provider {
@@ -87,12 +89,19 @@ pub fn detect_provider(headers: &HeaderMap) -> Provider {
 // ── Forwarding ────────────────────────────────────────────────────────────
 
 /// Forward a request to Anthropic's Messages API.
+/// `base_url` overrides the default `https://api.anthropic.com`.
 pub async fn forward_anthropic(
     body: serde_json::Value,
     api_key: &str,
+    base_url: Option<&str>,
 ) -> Result<ForwardResult, ForwardError> {
+    let upstream = base_url
+        .unwrap_or("https://api.anthropic.com")
+        .trim_end_matches('/')
+        .to_string()
+        + "/v1/messages";
     stream_post(
-        "https://api.anthropic.com/v1/messages",
+        &upstream,
         body,
         Some(("x-api-key", api_key)),
         Some(("anthropic-version", "2023-06-01")),
@@ -189,13 +198,37 @@ async fn stream_post(
     let status = upstream_response.status();
     let upstream_headers = upstream_response.headers().clone();
 
+    // Compute hop-by-hop headers per RFC 7230 §6.1
+    let static_hop_by_hop: &[&str] = &[
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "connection",
+    ];
+    let mut extra_hop_by_hop: Vec<String> = Vec::new();
+    // Any header named in the Connection header value must also be stripped
+    if let Some(conn_value) = upstream_headers
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+    {
+        for part in conn_value.split(',').map(|s| s.trim()) {
+            let lower = part.to_lowercase();
+            if !static_hop_by_hop.contains(&lower.as_str()) && !extra_hop_by_hop.contains(&lower) {
+                extra_hop_by_hop.push(lower);
+            }
+        }
+    }
+
     let mut resp = Response::builder().status(status);
 
     for (key, value) in upstream_headers.iter() {
         let key_lower = key.as_str().to_lowercase();
-        if key_lower == "transfer-encoding"
-            || key_lower == "connection"
-            || key_lower == "content-encoding"
+        if static_hop_by_hop.contains(&key_lower.as_str())
+            || extra_hop_by_hop.iter().any(|e| e == &key_lower)
         {
             continue;
         }
@@ -207,16 +240,15 @@ async fn stream_post(
     let byte_counter = Arc::new(AtomicU64::new(0));
 
     let counter_clone = byte_counter.clone();
-    let byte_stream: ByteStream = Box::pin(upstream_response.bytes_stream().map(move |r| {
-        match r {
+    let byte_stream: ByteStream =
+        Box::pin(upstream_response.bytes_stream().map(move |r| match r {
             Ok(bytes) => {
                 let len = bytes.len() as u64;
                 counter_clone.fetch_add(len, Ordering::Relaxed);
                 Ok(bytes)
             }
             Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-        }
-    }));
+        }));
     let axum_body = Body::from_stream(byte_stream);
 
     let response = resp
@@ -253,23 +285,24 @@ impl IntoResponse for ForwardError {
     fn into_response(self) -> Response {
         tracing::error!("Forward error: {:?}", self);
         let (status, msg) = match &self {
-            ForwardError::BuildClient(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "proxy: failed to build HTTP client")
-            }
-            ForwardError::Upstream(_) => {
-                (StatusCode::BAD_GATEWAY, "proxy: upstream provider unreachable")
-            }
-            ForwardError::BuildResponse(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "proxy: failed to build response")
-            }
+            ForwardError::BuildClient(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy: failed to build HTTP client",
+            ),
+            ForwardError::Upstream(_) => (
+                StatusCode::BAD_GATEWAY,
+                "proxy: upstream provider unreachable",
+            ),
+            ForwardError::BuildResponse(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy: failed to build response",
+            ),
         };
         let body = serde_json::json!({"error": msg});
         Response::builder()
             .status(status)
             .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_string(&body).unwrap_or_default(),
-            ))
+            .body(Body::from(serde_json::to_string(&body).unwrap_or_default()))
             .unwrap()
     }
 }
@@ -368,7 +401,10 @@ pub fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
         let m = model.to_lowercase();
 
         // Anthropic models
-        if m.contains("claude-sonnet-4") || m.contains("claude-3-5-sonnet") || m.contains("claude-3.5-sonnet") {
+        if m.contains("claude-sonnet-4")
+            || m.contains("claude-3-5-sonnet")
+            || m.contains("claude-3.5-sonnet")
+        {
             (3.0, 15.0)
         } else if m.contains("claude-3-5-haiku") || m.contains("claude-3.5-haiku") {
             (0.80, 4.0)
@@ -400,10 +436,13 @@ pub fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
             (0.075, 0.30) // Gemini Flash via OpenRouter
         } else if m.contains("gemini") {
             (1.25, 5.0) // Gemini Pro
-        } else if m.contains("llama") || m.contains("mistral") || m.contains("mixtral") {
+        } else if m.contains("llama")
+            || m.contains("mistral")
+            || m.contains("mixtral")
+            || m.contains("qwen")
+            || m.contains("yi-")
+        {
             (0.15, 0.15) // Open-source models on OpenRouter
-        } else if m.contains("qwen") || m.contains("yi-") {
-            (0.15, 0.15)
         }
         // Default
         else {

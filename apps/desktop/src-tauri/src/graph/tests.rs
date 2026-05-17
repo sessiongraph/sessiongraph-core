@@ -48,10 +48,8 @@ mod graph_tests {
         // We test the public injector path instead
         let db = test_db();
         insert_dummy_session(&db, "s1", "ph1");
-        crate::db::queries::upsert_session_graph(
-            &db, "g1", "s1", "ph1", json, 42, "haiku", 0.001,
-        )
-        .unwrap();
+        crate::db::queries::upsert_session_graph(&db, "g1", "s1", "ph1", json, 42, "haiku", 0.001)
+            .unwrap();
 
         let result = injector::inject(
             &db,
@@ -86,7 +84,8 @@ mod graph_tests {
         let db = test_db();
         insert_dummy_session(&db, "sx", "ox");
         let json = r#"{"sg_version":"1.0","session_id":"x","project_hash":"ox","token_count":10,"project":{},"state":{},"decisions":[],"conventions":{},"files":{},"errors":[]}"#;
-        crate::db::queries::upsert_session_graph(&db, "gx", "sx", "ox", json, 10, "haiku", 0.001).unwrap();
+        crate::db::queries::upsert_session_graph(&db, "gx", "sx", "ox", json, 10, "haiku", 0.001)
+            .unwrap();
 
         let body = json!({"messages": [{"role": "user", "content": "hi"}]});
         let result = injector::inject(&db, body, "ox", "openai", 500);
@@ -95,7 +94,10 @@ mod graph_tests {
         let msgs = result.body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["role"], "system");
-        assert!(msgs[0]["content"].as_str().unwrap().contains("[SESSIONGRAPH CONTEXT"));
+        assert!(msgs[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("[SESSIONGRAPH CONTEXT"));
     }
 
     #[test]
@@ -103,7 +105,8 @@ mod graph_tests {
         let db = test_db();
         insert_dummy_session(&db, "sy", "oy");
         let json = r#"{"sg_version":"1.0","session_id":"x","project_hash":"oy","token_count":10,"project":{},"state":{},"decisions":[],"conventions":{},"files":{},"errors":[]}"#;
-        crate::db::queries::upsert_session_graph(&db, "gy", "sy", "oy", json, 10, "haiku", 0.001).unwrap();
+        crate::db::queries::upsert_session_graph(&db, "gy", "sy", "oy", json, 10, "haiku", 0.001)
+            .unwrap();
 
         let body = json!({"messages": [
             {"role": "system", "content": "existing system"},
@@ -127,7 +130,8 @@ mod graph_tests {
         // This is a private function — tested via injector with tiny budget
         let db = test_db();
         insert_dummy_session(&db, "ss", "phs");
-        crate::db::queries::upsert_session_graph(&db, "gs", "ss", "phs", small, 5, "haiku", 0.001).unwrap();
+        crate::db::queries::upsert_session_graph(&db, "gs", "ss", "phs", small, 5, "haiku", 0.001)
+            .unwrap();
 
         let body = json!({"system": "s"});
         let result = injector::inject(&db, body, "phs", "anthropic", 5000);
@@ -140,7 +144,9 @@ mod graph_tests {
     #[test]
     fn enforce_graph_budget_truncates_large_graph() {
         // Build a very large graph JSON
-        let big_files: Vec<String> = (0..500).map(|i| format!("/very/long/path/to/file_{}.ts", i)).collect();
+        let big_files: Vec<String> = (0..500)
+            .map(|i| format!("/very/long/path/to/file_{}.ts", i))
+            .collect();
         let big_graph = json!({
             "sg_version": "1.0",
             "session_id": "x",
@@ -159,7 +165,10 @@ mod graph_tests {
 
         let db = test_db();
         insert_dummy_session(&db, "sl", "phl");
-        crate::db::queries::upsert_session_graph(&db, "gl", "sl", "phl", &big_json, 5000, "haiku", 0.001).unwrap();
+        crate::db::queries::upsert_session_graph(
+            &db, "gl", "sl", "phl", &big_json, 5000, "haiku", 0.001,
+        )
+        .unwrap();
 
         let body = json!({"system": "s"});
         // Budget of 50 tokens (~200 chars) — should strip files, errors, etc.
@@ -168,7 +177,11 @@ mod graph_tests {
         assert!(result.injected);
         // Graph should be significantly smaller than the raw 5000-token input.
         // After stripping files/errors/conventions, only state + marker text remain.
-        assert!(result.graph_tokens < 200, "expected truncated graph (<200 tokens), got {}", result.graph_tokens);
+        assert!(
+            result.graph_tokens < 200,
+            "expected truncated graph (<200 tokens), got {}",
+            result.graph_tokens
+        );
     }
 
     // ── SessionGraph schema ──────────────────────────────────────────

@@ -91,7 +91,7 @@ fn strip_large_fields(body: &Value) -> Value {
             let mut out = serde_json::Map::new();
             for (k, v) in map {
                 // Skip base64-encoded fields and huge arrays
-                if k.contains("data") || k.contains("image") || k.contains("base64") {
+                if k.contains("data") || k == "image_url" || k == "image" || k.contains("base64") {
                     out.insert(k.clone(), Value::String("[stripped]".into()));
                 } else if k == "messages" {
                     // Keep messages but cap array size
@@ -101,7 +101,7 @@ fn strip_large_fields(body: &Value) -> Value {
                             .rev()
                             .take(20)
                             .rev()
-                            .map(|m| strip_large_fields(m))
+                            .map(strip_large_fields)
                             .collect();
                         out.insert(k.clone(), Value::Array(capped));
                     } else {
@@ -113,9 +113,7 @@ fn strip_large_fields(body: &Value) -> Value {
             }
             Value::Object(out)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(strip_large_fields).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.iter().map(strip_large_fields).collect()),
         _ => body.clone(),
     }
 }
@@ -127,10 +125,7 @@ pub fn hash_api_key(api_key: &str) -> String {
         return "unknown".to_string();
     }
     let digest = Sha256::digest(api_key.as_bytes());
-    digest[..8]
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect()
+    digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Compute a stable project hash from available context.
@@ -141,10 +136,7 @@ pub fn hash_api_key(api_key: &str) -> String {
 /// 3. Fallback: "unknown"
 ///
 /// The result is a hex-encoded SHA-256 truncated to 16 characters.
-pub fn compute_project_hash(
-    system_prompt: Option<&str>,
-    _working_dir: Option<&str>,
-) -> String {
+pub fn compute_project_hash(system_prompt: Option<&str>, _working_dir: Option<&str>) -> String {
     let input = system_prompt
         .map(|s| s.chars().take(100).collect::<String>())
         .filter(|s| !s.is_empty())
@@ -152,10 +144,7 @@ pub fn compute_project_hash(
 
     let digest = Sha256::digest(input.as_bytes());
     // First 8 bytes → 16 hex chars
-    digest[..8]
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect()
+    digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Infer a project name from the system prompt.
@@ -171,8 +160,7 @@ pub fn infer_project_name(system_prompt: Option<&str>) -> Option<String> {
 
     // Look for explicit project name markers
     if let Some(line) = prompt.lines().find(|l| {
-        l.to_lowercase().starts_with("project:")
-            || l.to_lowercase().starts_with("project name:")
+        l.to_lowercase().starts_with("project:") || l.to_lowercase().starts_with("project name:")
     }) {
         let name = line.split(':').nth(1)?.trim();
         if !name.is_empty() {
@@ -200,17 +188,48 @@ pub fn infer_project_name(system_prompt: Option<&str>) -> Option<String> {
         let path = rest.split_whitespace().next()?;
         let segments: Vec<&str> = path.split('/').collect();
         // github.com/user/repo → segments[0] = user, segments[1] = repo
-        let repo = if segments.len() >= 2 { segments[1] } else { segments[0] };
+        let repo = if segments.len() >= 2 {
+            segments[1]
+        } else {
+            segments[0]
+        };
         if !repo.is_empty() && !repo.contains('.') && repo.len() < 50 {
             return Some(repo.to_string());
         }
     }
 
-    // Look for directory path pattern (e.g., "working on /path/to/my-project")
-    if let Some(start) = prompt.find("working in ") {
-        let rest = &prompt[start + 11..];
-        let path = rest.split_whitespace().next()?;
-        if let Some(name) = path.split('/').filter(|s| !s.is_empty()).last() {
+    // Look for directory path pattern (e.g., "working in /path/to/my-project",
+    // "working on /path/to/my-project")
+    for prefix in &["working in ", "working on "] {
+        if let Some(start) = prompt.find(prefix) {
+            let rest = &prompt[start + prefix.len()..];
+            let path = rest.split_whitespace().next()?;
+            if let Some(name) = path.split('/').rfind(|s| !s.is_empty()) {
+                if name.len() < 50 && !name.contains('.') {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    // Look for project/repo markers (e.g., "Project: my-project", "Repo: my-project")
+    for prefix in &["project: ", "repo: ", "current project: "] {
+        if let Some(start) = prompt.to_lowercase().find(prefix) {
+            let name = prompt[start + prefix.len()..]
+                .split_whitespace()
+                .next()?
+                .trim_end_matches('.')
+                .to_string();
+            if name.len() > 1 && name.len() < 50 && !name.contains('.') {
+                return Some(name);
+            }
+        }
+    }
+
+    // Look for directory path pattern (e.g., "the /path/to/my-project directory")
+    if let Some(start) = prompt.find(" in ") {
+        let candidate = prompt[start + 4..].split_whitespace().next()?;
+        if let Some(name) = candidate.split('/').rfind(|s| !s.is_empty()) {
             if name.len() < 50 && !name.contains('.') {
                 return Some(name.to_string());
             }

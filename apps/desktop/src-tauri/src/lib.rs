@@ -259,9 +259,10 @@ async fn sync_daily_usage(
         return;
     };
 
-    // Read stats from the settings table inside a blocking closure so we
-    // don't hold the Mutex across an await point.
-    let stats: Option<(u64, u64, u64, u32, f64)> = tokio::task::spawn_blocking({
+    // Read all stats inside a blocking closure so we don't hold the Mutex
+    // across an await point.
+    type StatsPayload = (u64, u64, u64, u32, f64, String, String, f64, f64, String);
+    let stats: Option<StatsPayload> = tokio::task::spawn_blocking({
         let db = db.clone();
         move || {
             let conn = db.lock().ok()?;
@@ -270,20 +271,39 @@ async fn sync_daily_usage(
             let sessions_restored = read_stat_u64(&conn, "sessions_restored_total");
             let sessions_saved = read_stat_u64(&conn, "sessions_saved_this_month") as u32;
             let cost_saved_usd = read_stat_f64(&conn, "cost_saved_usd_total");
+            let tool_usage = crate::db::queries::get_tool_usage_json(&conn);
+            let model_usage = crate::db::queries::get_model_usage_json(&conn);
+            let (avg_req, avg_dur) = crate::db::queries::get_session_length_stats(&conn);
+            let compression_by_model = crate::db::queries::get_compression_by_model_json(&conn);
             Some((
                 tokens_compressed,
                 tokens_saved,
                 sessions_restored,
                 sessions_saved,
                 cost_saved_usd,
+                tool_usage,
+                model_usage,
+                avg_req,
+                avg_dur,
+                compression_by_model,
             ))
         }
     })
     .await
     .unwrap_or(None);
 
-    let Some((tokens_compressed, tokens_saved, sessions_restored, sessions_saved, cost_saved_usd)) =
-        stats
+    let Some((
+        tokens_compressed,
+        tokens_saved,
+        sessions_restored,
+        sessions_saved,
+        cost_saved_usd,
+        tool_usage,
+        model_usage,
+        avg_requests_per_session,
+        avg_session_duration_minutes,
+        compression_by_model,
+    )) = stats
     else {
         tracing::warn!("Usage sync: could not acquire DB lock");
         return;
@@ -295,6 +315,14 @@ async fn sync_daily_usage(
         std::env::var("SG_SERVER_URL").unwrap_or_else(|_| "https://sessiongraph.dev".into());
     let url = format!("{}/api/usage/sync", server_url);
 
+    // Parse JSON strings back to values for embedding in the payload
+    let tool_usage_val: serde_json::Value =
+        serde_json::from_str(&tool_usage).unwrap_or(serde_json::json!({}));
+    let model_usage_val: serde_json::Value =
+        serde_json::from_str(&model_usage).unwrap_or(serde_json::json!({}));
+    let compression_by_model_val: serde_json::Value =
+        serde_json::from_str(&compression_by_model).unwrap_or(serde_json::json!({}));
+
     let payload = serde_json::json!({
         "licenseKey": lf.key,
         "date": today,
@@ -303,6 +331,11 @@ async fn sync_daily_usage(
         "sessionsRestored": sessions_restored,
         "sessionsSaved": sessions_saved,
         "costSavedUsd": cost_saved_usd,
+        "toolUsage": tool_usage_val,
+        "modelUsage": model_usage_val,
+        "avgRequestsPerSession": (avg_requests_per_session * 10.0).round() / 10.0,
+        "avgSessionDurationMinutes": (avg_session_duration_minutes * 10.0).round() / 10.0,
+        "compressionByModel": compression_by_model_val,
     });
 
     match client.post(&url).json(&payload).send().await {

@@ -426,6 +426,102 @@ pub fn list_graphs(conn: &Connection) -> anyhow::Result<Vec<GraphEntry>> {
     Ok(items)
 }
 
+// ── Analytics aggregates for usage sync ─────────────────────────────────
+
+/// Count sessions grouped by tool for the tool distribution payload.
+/// Returns a JSON object string like `{"claude-code":12,"cursor":3}`.
+pub fn get_tool_usage_json(conn: &Connection) -> String {
+    let mut stmt = match conn.prepare(
+        "SELECT COALESCE(tool, 'unknown'), COUNT(*) FROM sessions GROUP BY tool",
+    ) {
+        Ok(s) => s,
+        Err(_) => return "{}".into(),
+    };
+    let rows: Vec<(String, i64)> = match stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(_) => return "{}".into(),
+    };
+    let obj: serde_json::Map<String, serde_json::Value> = rows
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::from(v)))
+        .collect();
+    serde_json::to_string(&obj).unwrap_or_else(|_| "{}".into())
+}
+
+/// Count requests grouped by model for the model distribution payload.
+/// Returns a JSON object string like `{"claude-sonnet-4-5":100,"gpt-4o":20}`.
+pub fn get_model_usage_json(conn: &Connection) -> String {
+    let mut stmt = match conn.prepare(
+        "SELECT model, COUNT(*) FROM requests GROUP BY model",
+    ) {
+        Ok(s) => s,
+        Err(_) => return "{}".into(),
+    };
+    let rows: Vec<(String, i64)> = match stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(_) => return "{}".into(),
+    };
+    let obj: serde_json::Map<String, serde_json::Value> = rows
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::from(v)))
+        .collect();
+    serde_json::to_string(&obj).unwrap_or_else(|_| "{}".into())
+}
+
+/// Average requests per session and average session duration in minutes.
+/// Returns `(avg_requests, avg_duration_minutes)`.
+pub fn get_session_length_stats(conn: &Connection) -> (f64, f64) {
+    let avg_req = conn
+        .query_row(
+            "SELECT AVG(message_count) FROM sessions WHERE status != 'active'",
+            [],
+            |r| r.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+
+    let avg_dur = conn
+        .query_row(
+            "SELECT AVG(
+                (julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 1440.0
+             ) FROM sessions WHERE status != 'active'",
+            [],
+            |r| r.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+
+    (avg_req, avg_dur)
+}
+
+/// Average compression ratio per model (only requests where compression ran).
+/// Returns a JSON object string like `{"claude-sonnet-4-5":0.72,"gpt-4o":0.68}`.
+pub fn get_compression_by_model_json(conn: &Connection) -> String {
+    let mut stmt = match conn.prepare(
+        "SELECT model, AVG(compression_ratio)
+         FROM requests
+         WHERE compression_ratio IS NOT NULL AND compression_ratio < 1.0
+         GROUP BY model",
+    ) {
+        Ok(s) => s,
+        Err(_) => return "{}".into(),
+    };
+    let rows: Vec<(String, f64)> = match stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(_) => return "{}".into(),
+    };
+    let obj: serde_json::Map<String, serde_json::Value> = rows
+        .into_iter()
+        .map(|(k, v)| {
+            let rounded = (v * 1000.0).round() / 1000.0;
+            (k, serde_json::Value::from(rounded))
+        })
+        .collect();
+    serde_json::to_string(&obj).unwrap_or_else(|_| "{}".into())
+}
+
 pub fn list_sessions_paginated(
     conn: &Connection,
     page: u32,

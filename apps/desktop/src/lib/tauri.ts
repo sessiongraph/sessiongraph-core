@@ -14,6 +14,7 @@ export type DashboardStats = {
     tokens_saved: number;
     cost_saved_usd: number;
     sessions: number;
+    graphs_saved: number;
   };
   current_session: CurrentSession | null;
   active_sessions: CurrentSession[];

@@ -319,7 +319,6 @@ unsafe fn windows_broadcast_setting_change(env_ptr: *const u16) {
     );
 }
 
-
 /// Remove persistent user env vars for the proxy.
 /// Called when proxy stops so new processes fall back to direct connection.
 #[cfg(not(windows))]

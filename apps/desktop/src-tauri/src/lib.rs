@@ -34,6 +34,11 @@ pub fn run() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(4200);
 
+    // Write the PAC file for automatic proxy discovery
+    if let Err(e) = crate::commands::settings::write_pac_file(proxy_port) {
+        tracing::warn!("Failed to write PAC file: {}", e);
+    }
+
     // Build the shared application state
     let state = Arc::new(proxy::InterceptState::new(conn, proxy_port));
 
@@ -79,6 +84,8 @@ pub fn run() {
             commands::settings::setup_venv,
             commands::settings::delete_all_data,
             commands::settings::get_app_version,
+            commands::settings::get_system_proxy_status,
+            commands::settings::set_system_proxy,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {

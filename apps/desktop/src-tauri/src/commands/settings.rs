@@ -104,18 +104,33 @@ pub fn get_setup_script(state: tauri::State<'_, Arc<InterceptState>>) -> String 
     let port = state.proxy_port;
     if cfg!(windows) {
         format!(
-            "# Run this in PowerShell as Administrator:\n\
-             [System.Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL','http://localhost:{port}','User')\n\
-             [System.Environment]::SetEnvironmentVariable('OPENAI_BASE_URL','http://localhost:{port}/v1','User')\n\
-             \n# Restart your terminal for changes to take effect.\n"
+            "# Add this to your PowerShell profile ($PROFILE):\n\
+             $sgProxyUrl = 'http://localhost:{port}'\n\
+             try {{\n\
+             \x20 $sgResponse = Invoke-WebRequest -Uri \"$sgProxyUrl/health\" -TimeoutSec 1 -ErrorAction Stop\n\
+             \x20 if ($sgResponse.StatusCode -eq 200) {{\n\
+             \x20\x20   $env:ANTHROPIC_BASE_URL = $sgProxyUrl\n\
+             \x20\x20   $env:OPENAI_BASE_URL = \"$sgProxyUrl/v1\"\n\
+             \x20 }}\n\
+             }} catch {{ }}\n\
+             \n\
+             # What this does:\n\
+             # - Proxy running → env vars set → CLI tools use proxy\n\
+             # - Proxy closed → vars not set → tools connect directly\n\
+             # Open a new terminal (or restart your shell) after adding.\n"
         )
     } else {
         format!(
-            "# Run this in your terminal:\n\
-             echo 'export ANTHROPIC_BASE_URL=http://localhost:{port}' >> ~/.zshrc\n\
-             echo 'export OPENAI_BASE_URL=http://localhost:{port}/v1' >> ~/.zshrc\n\
-             source ~/.zshrc\n\
-             \n# Or substitute ~/.bashrc if you use bash.\n"
+            "# Add this to ~/.zshrc (or ~/.bashrc):\n\
+             if curl -sf http://localhost:{port}/health > /dev/null 2>&1; then\n\
+             \x20 export ANTHROPIC_BASE_URL=http://localhost:{port}\n\
+             \x20 export OPENAI_BASE_URL=http://localhost:{port}/v1\n\
+             fi\n\
+             \n\
+             # What this does:\n\
+             # - Proxy running → env vars set → CLI tools use proxy\n\
+             # - Proxy closed → vars not set → tools connect directly\n\
+             # Then: source ~/.zshrc (or open a new terminal).\n"
         )
     }
 }
@@ -201,4 +216,130 @@ pub async fn delete_all_data(state: tauri::State<'_, Arc<InterceptState>>) -> Re
 #[tauri::command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ── PAC file & system proxy ──────────────────────────────────────────────
+
+/// Resolve the sessiongraph data directory.
+fn sessiongraph_dir() -> Option<std::path::PathBuf> {
+    let home = if cfg!(windows) {
+        std::env::var("USERPROFILE").ok()?
+    } else {
+        std::env::var("HOME").ok()?
+    };
+    Some(std::path::PathBuf::from(home).join(".sessiongraph"))
+}
+
+/// Write the PAC (Proxy Auto-Config) file to disk.
+/// Returns the file path on success.
+pub fn write_pac_file(port: u16) -> Result<std::path::PathBuf, String> {
+    let dir = sessiongraph_dir().ok_or("Cannot determine home directory")?;
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("proxy.pac");
+
+    let content = format!(
+        r#"function FindProxyForURL(url, host) {{
+    // Route AI API traffic through SessionGraph proxy when running.
+    // Falls back to DIRECT if the proxy is unavailable (app closed).
+    if (shExpMatch(host, "api.anthropic.com") ||
+        shExpMatch(host, "api.openai.com") ||
+        shExpMatch(host, "*.openai.com") ||
+        shExpMatch(host, "openrouter.ai") ||
+        shExpMatch(host, "*.openrouter.ai")) {{
+        return "PROXY 127.0.0.1:{port}; DIRECT";
+    }}
+    return "DIRECT";
+}}
+"#,
+    );
+    std::fs::write(&path, &content)
+        .map_err(|e| format!("Cannot write PAC file: {e}"))?;
+    tracing::info!("PAC file written to {}", path.display());
+    Ok(path)
+}
+
+#[derive(Debug, Serialize)]
+pub struct SystemProxyStatus {
+    pub enabled: bool,
+    pub pac_file_path: String,
+}
+
+/// Get the current system proxy status.
+#[tauri::command]
+pub fn get_system_proxy_status() -> SystemProxyStatus {
+    let dir = sessiongraph_dir();
+    let pac_file_path = dir
+        .as_ref()
+        .map(|d| d.join("proxy.pac"))
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let enabled = if cfg!(windows) {
+        // Check registry for AutoConfigURL pointing to our PAC file
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "try {{ $v = Get-ItemPropertyValue -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -ErrorAction Stop; if ($v -eq 'file:///{escaped}') {{ 'true' }} else {{ 'false' }} }} catch {{ 'false' }}",
+                    escaped = pac_file_path.replace('\'', "''")
+                ),
+            ])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "true")
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    SystemProxyStatus {
+        enabled,
+        pac_file_path,
+    }
+}
+
+/// Enable or disable the system proxy (PAC file).
+#[tauri::command]
+pub async fn set_system_proxy(enabled: bool) -> Result<(), String> {
+    let dir = sessiongraph_dir().ok_or("Cannot determine home directory")?;
+    let pac_path = dir.join("proxy.pac");
+
+    if !pac_path.exists() {
+        return Err("PAC file not found. Restart SessionGraph to create it.".to_string());
+    }
+
+    let pac_url = format!("file:///{}", pac_path.to_string_lossy());
+
+    if cfg!(windows) {
+        let action = if enabled { "Set" } else { "Remove" };
+        let cmd = if enabled {
+            format!(
+                "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -Value '{url}'",
+                url = pac_url
+            )
+        } else {
+            "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -ErrorAction SilentlyContinue".to_string()
+        };
+
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &cmd])
+            .output()
+            .map_err(|e| format!("Failed to run PowerShell: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to {action} system proxy: {stderr}"));
+        }
+
+        tracing::info!("System proxy {}", if enabled { "enabled" } else { "disabled" });
+        Ok(())
+    } else {
+        // macOS/Linux proxy configuration via networksetup / gsettings
+        // Not yet implemented — PRs welcome.
+        tracing::warn!("set_system_proxy not implemented on this platform");
+        Err("System proxy configuration is only supported on Windows".to_string())
+    }
 }

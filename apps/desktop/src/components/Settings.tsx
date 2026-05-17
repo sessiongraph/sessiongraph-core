@@ -1,7 +1,7 @@
 // Settings — settings panel. See spec section 6.7.
 
 import { useEffect, useRef, useState } from "react";
-import { tauri, type Settings as SettingsType } from "../lib/tauri";
+import { tauri, type Settings as SettingsType, type SystemProxyStatus } from "../lib/tauri";
 
 const DEFAULTS: Record<string, string> = {
   proxy_port: "4200",
@@ -35,12 +35,15 @@ export default function Settings({ onClose }: Props) {
   const [saved, setSaved] = useState(false);
   const [appVersion, setAppVersion] = useState("…");
   const [deleting, setDeleting] = useState(false);
+  const [systemProxy, setSystemProxy] = useState<SystemProxyStatus | null>(null);
+  const [proxyToggling, setProxyToggling] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     void tauri.getSettings().then(setSettings);
     void tauri.getAppVersion().then(setAppVersion);
+    void tauri.getSystemProxyStatus().then(setSystemProxy);
   }, []);
 
   const update = (key: string, value: string) => {
@@ -57,6 +60,18 @@ export default function Settings({ onClose }: Props) {
         setTimeout(() => setSaved(false), 1500);
       });
     }, 300);
+  };
+
+  const handleToggleProxy = async () => {
+    if (!systemProxy) return;
+    setProxyToggling(true);
+    try {
+      await tauri.setSystemProxy(!systemProxy.enabled);
+      setSystemProxy({ ...systemProxy, enabled: !systemProxy.enabled });
+    } catch (e) {
+      console.error("Proxy toggle failed:", e);
+    }
+    setProxyToggling(false);
   };
 
   const handleReset = async () => {
@@ -165,6 +180,33 @@ export default function Settings({ onClose }: Props) {
         <p className="-mt-3 text-xs text-text-secondary/60 ml-[1px]">
           Set to a provider base URL (e.g. https://api.deepseek.com) for any OpenAI-compatible endpoint. Path is appended automatically.
         </p>
+
+        {/* System proxy (PAC) */}
+        <SettingRow label="Auto-route AI traffic">
+          <div className="flex items-center gap-2">
+            {systemProxy === null ? (
+              <span className="text-xs text-text-secondary">…</span>
+            ) : (
+              <>
+                <Toggle
+                  on={systemProxy.enabled}
+                  onChange={handleToggleProxy}
+                  disabled={proxyToggling}
+                />
+                <span className="text-xs text-text-secondary/60">
+                  {proxyToggling
+                    ? "…"
+                    : systemProxy.enabled
+                      ? "On"
+                      : "Off"}
+                </span>
+              </>
+            )}
+          </div>
+        </SettingRow>
+        <p className="-mt-3 text-xs text-text-secondary/60 ml-[1px]">
+          When enabled, AI API traffic automatically routes through SessionGraph using system proxy settings. Apps fall back to direct connection when SessionGraph is closed.
+        </p>
       </div>
 
       {/* Account info */}
@@ -247,16 +289,19 @@ function SettingRow({
 function Toggle({
   on,
   onChange,
+  disabled,
 }: {
   on: boolean;
   onChange: (on: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={() => onChange(!on)}
+      disabled={disabled}
       className={`relative h-6 w-11 rounded-full transition-colors ${
         on ? "bg-accent" : "bg-border"
-      }`}
+      } ${disabled ? "opacity-50" : ""}`}
     >
       <span
         className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${

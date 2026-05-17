@@ -104,8 +104,8 @@ export default function Onboarding({ onComplete }: Props) {
             computer.
           </p>
           <p className="mt-4 text-sm text-text-secondary">
-            Run this script in your terminal to set the required environment
-            variables, then restart your AI coding tool:
+            Add this to your shell profile so CLI tools auto-detect the proxy.
+            When SessionGraph is closed, they'll connect directly — no impact.
           </p>
           <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-background p-4 font-mono text-xs text-text-primary whitespace-pre-wrap">
             {script || "Loading…"}

@@ -62,11 +62,15 @@ jobs:
             patchelf
 
       - name: Import Apple certificate
-        if: startsWith(matrix.runner, 'macos') && secrets.APPLE_CERTIFICATE != ''
+        if: startsWith(matrix.runner, 'macos')
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No APPLE_CERTIFICATE secret set — skipping code signing setup"
+            exit 0
+          fi
           CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH

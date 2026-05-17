@@ -64,11 +64,15 @@ export default function Dashboard() {
   const hasActivity = (today?.requests ?? 0) > 0;
   const hasTotal = (total?.sessions ?? 0) > 0;
 
-  const sessionsWithGraphs = sessions.filter((s) => s.has_graph).length;
+  // Use server-side graph count from stats (always populated) as primary source.
+  // Fall back to counting from the loaded sessions list for the "last restored" detail.
+  const graphsSaved = (total?.graphs_saved ?? 0) > 0
+    ? (total!.graphs_saved as number)
+    : sessions.filter((s) => s.has_graph).length;
   const projectsWithMemory = new Set(
     sessions.filter((s) => s.has_graph).map((s) => s.project_hash),
   ).size;
-  const memoryTokensSaved = sessionsWithGraphs * 400 * 0.85;
+  const memoryTokensSaved = graphsSaved * 400 * 0.85;
   const memoryCostSaved = (memoryTokensSaved / 1_000_000) * 3.0;
   const lastRestoredSession = sessions.find((s) => s.has_graph);
 
@@ -112,42 +116,32 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* ── Active session banner ────────────────────────────────────────── */}
-      {activeSessions.length > 0 && (
-        <div className="space-y-1.5">
-          {activeSessions.map((s) => {
-            const saving =
-              s.tokens_in_raw > 0
-                ? `${((1 - s.compression_ratio) * 100).toFixed(0)}% compression`
-                : "intercepting…";
-            const providerColor =
-              s.provider === "anthropic"
-                ? "border-amber-400/25 bg-amber-400/8 text-amber-400"
-                : s.provider === "openrouter"
-                  ? "border-purple-400/25 bg-purple-400/8 text-purple-400"
-                  : "border-emerald-400/25 bg-emerald-400/8 text-emerald-400";
-            return (
-              <div
-                key={s.id}
-                className={`flex items-center justify-between rounded-lg border px-4 py-2.5 ${providerColor}`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse shrink-0" />
-                  <span className="text-sm font-medium truncate">
-                    {s.project_name ?? `session ${s.id.slice(0, 6)}`}
-                  </span>
-                  {s.tokens_in_sent > 0 && (
-                    <span className="text-xs opacity-60 hidden sm:inline">
-                      {fmtTokens(s.tokens_in_sent)} sent
-                    </span>
-                  )}
-                </div>
-                <span className="text-xs font-medium shrink-0">{saving}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* ── Active session banner (single collapsed bar) ─────────────────── */}
+      {activeSessions.length > 0 && (() => {
+        const s = activeSessions[0]!;
+        const saving = s.tokens_in_raw > 0
+          ? `${((1 - s.compression_ratio) * 100).toFixed(0)}% compression`
+          : "intercepting…";
+        const color = s.provider === "anthropic"
+          ? "border-amber-400/25 bg-amber-400/8 text-amber-400"
+          : s.provider === "openrouter"
+            ? "border-purple-400/25 bg-purple-400/8 text-purple-400"
+            : "border-emerald-400/25 bg-emerald-400/8 text-emerald-400";
+        return (
+          <div className={`flex items-center justify-between rounded-lg border px-4 py-2.5 ${color}`}>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse shrink-0" />
+              <span className="text-sm font-medium truncate">
+                {s.project_name ?? `session ${s.id.slice(0, 6)}`}
+              </span>
+              {activeSessions.length > 1 && (
+                <span className="text-xs opacity-60">+{activeSessions.length - 1} more</span>
+              )}
+            </div>
+            <span className="text-xs font-medium shrink-0">{saving}</span>
+          </div>
+        );
+      })()}
 
       {/* ── Two-panel stat area ──────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4">
@@ -219,15 +213,15 @@ export default function Dashboard() {
             Session Memory
           </p>
 
-          {sessionsWithGraphs > 0 ? (
+          {graphsSaved > 0 ? (
             <>
               <div className="flex items-end gap-5 flex-wrap">
                 <div>
                   <p className="text-2xl font-semibold tabular-nums text-text-primary">
-                    {sessionsWithGraphs}
+                    {graphsSaved}
                   </p>
                   <p className="text-xs text-text-secondary mt-0.5">
-                    {sessionsWithGraphs === 1 ? "session" : "sessions"} restored
+                    {graphsSaved === 1 ? "session" : "sessions"} with memory
                   </p>
                 </div>
                 {projectsWithMemory > 0 && (

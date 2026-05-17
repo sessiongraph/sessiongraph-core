@@ -21,6 +21,24 @@ fn get_license_status() -> license::LicenseStatus {
     license::get_license_status()
 }
 
+/// Tauri IPC command — validates and persists a license key to license.json.
+/// Returns the resolved tier on success, or an error string on failure.
+#[tauri::command]
+fn activate_license(key: String) -> Result<license::LicenseStatus, String> {
+    let claims = license::verify_jwt(&key).map_err(|e| e.to_string())?;
+    let lf = license::LicenseFile {
+        key,
+        tier: claims.tier.clone(),
+        seats: claims.seats,
+        expires_at: claims.exp.and_then(|exp| {
+            chrono::DateTime::from_timestamp(exp as i64, 0).map(|dt| dt.to_rfc3339())
+        }),
+        last_validated: Some(chrono::Utc::now().to_rfc3339()),
+    };
+    license::write_license_file(&lf).map_err(|e| e.to_string())?;
+    Ok(license::get_license_status())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Install rustls crypto provider process-wide before any TLS work.
@@ -196,6 +214,7 @@ pub fn run() {
             commands::settings::add_cli_profile,
             commands::settings::remove_cli_profile,
             get_license_status,
+            activate_license,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {

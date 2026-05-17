@@ -141,4 +141,8 @@ export const tauri = {
   getCliProfileStatus: () => invoke<{ installed: boolean; profile_path: string | null }>("get_cli_profile_status"),
   addCliProfile: () => invoke<string>("add_cli_profile"),
   removeCliProfile: () => invoke<string>("remove_cli_profile"),
+
+  // license
+  getLicenseStatus: () => invoke<{ tier: string; valid: boolean; expires_at: string | null; source: string }>("get_license_status"),
+  activateLicense: (key: string) => invoke<{ tier: string; valid: boolean; expires_at: string | null; source: string }>("activate_license", { key }),
 };

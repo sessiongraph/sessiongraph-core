@@ -57,16 +57,23 @@ pub async fn compress(messages: &[serde_json::Value], model: &str) -> Option<Com
         return None;
     }
 
-    let result = tokio::process::Command::new(&python_path)
-        .args([
-            wrapper_script_path()?.to_string_lossy().as_ref(),
-            &temp_file.to_string_lossy(),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
+    let mut cmd = tokio::process::Command::new(&python_path);
+    cmd.args([
+        wrapper_script_path()?.to_string_lossy().as_ref(),
+        &temp_file.to_string_lossy(),
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+
+    // Prevent a console window flashing on Windows for every compression call.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let result = cmd.spawn().ok()?;
 
     let child = result;
 

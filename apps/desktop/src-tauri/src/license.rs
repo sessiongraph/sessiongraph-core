@@ -28,7 +28,8 @@ pub struct LicenseClaims {
     pub tier: String,
     pub seats: u32,
     pub iat: u64,
-    pub exp: u64,
+    /// Absent for lifetime licenses.
+    pub exp: Option<u64>,
 }
 
 /// Persisted license file on disk.
@@ -88,7 +89,9 @@ pub fn verify_jwt(jwt: &str) -> anyhow::Result<LicenseClaims> {
         DecodingKey::from_rsa_pem(pem.as_bytes()).context("Failed to parse embedded public key")?;
 
     let mut validation = Validation::new(Algorithm::RS256);
-    validation.leeway = 60; // 60s clock skew tolerance
+    validation.leeway = 60;
+    // Lifetime licenses have no exp claim — don't require it
+    validation.required_spec_claims.remove("exp");
 
     let token_data =
         decode::<LicenseClaims>(jwt, &key, &validation).context("JWT verification failed")?;

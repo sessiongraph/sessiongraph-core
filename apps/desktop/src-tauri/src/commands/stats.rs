@@ -20,6 +20,7 @@ pub struct TotalStats {
     pub tokens_saved: u64,
     pub cost_saved_usd: f64,
     pub sessions: u64,
+    pub graphs_saved: u64,
 }
 
 #[derive(Debug, Serialize, Clone)]

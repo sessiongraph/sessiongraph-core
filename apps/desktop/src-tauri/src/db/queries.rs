@@ -220,10 +220,15 @@ pub fn get_total_stats(conn: &Connection) -> anyhow::Result<TotalStats> {
                 tokens_saved: r.get::<_, i64>(0)?.unsigned_abs(),
                 cost_saved_usd: r.get(1)?,
                 sessions: r.get::<_, i64>(2)?.unsigned_abs(),
+                graphs_saved: 0, // filled below
             })
         },
     )?;
-    Ok(row)
+    let graphs_saved: u64 = conn
+        .query_row("SELECT COUNT(*) FROM session_graphs", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+        .unsigned_abs();
+    Ok(TotalStats { graphs_saved, ..row })
 }
 
 /// Build a full DashboardStats struct for the given date.

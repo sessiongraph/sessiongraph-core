@@ -37,6 +37,9 @@ export default function Settings({ onClose }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [systemProxy, setSystemProxy] = useState<SystemProxyStatus | null>(null);
   const [proxyToggling, setProxyToggling] = useState(false);
+  const [licenseInput, setLicenseInput] = useState("");
+  const [licenseError, setLicenseError] = useState<string | null>(null);
+  const [licenseActivating, setLicenseActivating] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<Record<string, string>>({});
 
@@ -45,6 +48,22 @@ export default function Settings({ onClose }: Props) {
     void tauri.getAppVersion().then(setAppVersion);
     void tauri.getSystemProxyStatus().then(setSystemProxy);
   }, []);
+
+  const handleActivateLicense = async () => {
+    const key = licenseInput.trim();
+    if (!key) return;
+    setLicenseActivating(true);
+    setLicenseError(null);
+    try {
+      const status = await tauri.activateLicense(key);
+      setSettings((s) => ({ ...s, tier: status.tier }));
+      setLicenseInput("");
+    } catch (e) {
+      setLicenseError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLicenseActivating(false);
+    }
+  };
 
   const update = (key: string, value: string) => {
     setSettings((s) => ({ ...s, [key]: value }));
@@ -209,29 +228,62 @@ export default function Settings({ onClose }: Props) {
         </p>
       </div>
 
-      {/* Account info */}
-      <div className="mt-8 rounded-lg border border-border bg-surface p-4">
+      {/* License */}
+      <div className="mt-8 rounded-lg border border-border bg-surface p-4 space-y-3">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-          Account
+          License
         </h3>
-        <p className="mt-2 text-sm text-text-primary">
-          Tier: <span className="font-medium capitalize">{settings.tier}</span>
-        </p>
-        <p className="text-sm text-text-primary">
-          Sessions saved this month:{" "}
-          <span className="font-medium">
-            {settings.sessions_saved_this_month}
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-text-primary">Plan</span>
+          <span className={`text-sm font-semibold capitalize ${settings.tier !== "free" ? "text-accent" : "text-text-secondary"}`}>
+            {settings.tier}
           </span>
-        </p>
-        {settings.tier === "free" && (
-          <a
-            href="https://sessiongraph.dev/pricing"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-2 inline-block text-sm text-accent hover:underline"
-          >
-            Upgrade to Pro →
-          </a>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-text-primary">Sessions saved this month</span>
+          <span className="text-sm font-medium text-text-primary">{settings.sessions_saved_this_month}</span>
+        </div>
+
+        {settings.tier === "free" ? (
+          <div className="space-y-2 pt-1">
+            <p className="text-xs text-text-secondary/70">
+              Have a license key? Paste it below to activate Pro.
+            </p>
+            <textarea
+              value={licenseInput}
+              onChange={(e) => setLicenseInput(e.target.value)}
+              placeholder="Paste your license key (JWT)…"
+              rows={3}
+              className="w-full rounded border border-border bg-background px-3 py-2 font-mono text-xs text-text-primary resize-none focus:outline-none focus:border-accent"
+            />
+            {licenseError && (
+              <p className="text-xs text-red-400">{licenseError}</p>
+            )}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleActivateLicense}
+                disabled={licenseActivating || !licenseInput.trim()}
+                className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-50"
+              >
+                {licenseActivating ? "Activating…" : "Activate License"}
+              </button>
+              <a
+                href="https://www.sessiongraph.dev/#pricing"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-accent hover:underline"
+              >
+                Get a license →
+              </a>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-text-secondary/60">
+            License active. To update or revoke, visit{" "}
+            <a href="https://www.sessiongraph.dev/dashboard/billing" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+              sessiongraph.dev/dashboard/billing
+            </a>.
+          </p>
         )}
       </div>
 

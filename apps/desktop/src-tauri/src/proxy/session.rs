@@ -159,7 +159,11 @@ pub fn compute_project_hash(system_prompt: Option<&str>, _working_dir: Option<&s
 fn extract_working_dir(prompt: &str) -> Option<String> {
     // Claude Code: <env>\ncwd: /path/to/project\n...
     if let Some(cwd_pos) = prompt.find("\ncwd:").or_else(|| {
-        if prompt.starts_with("cwd:") { Some(0) } else { None }
+        if prompt.starts_with("cwd:") {
+            Some(0)
+        } else {
+            None
+        }
     }) {
         let rest = &prompt[cwd_pos..].trim_start_matches('\n');
         let after_cwd = rest.strip_prefix("cwd:")?.trim();

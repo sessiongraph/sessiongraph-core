@@ -130,8 +130,7 @@ pub fn list_graphs(state: tauri::State<'_, Arc<InterceptState>>) -> Vec<GraphEnt
     entries
         .into_iter()
         .map(|e| {
-            let stack: Vec<String> =
-                serde_json::from_str(&e.stack_json).unwrap_or_default();
+            let stack: Vec<String> = serde_json::from_str(&e.stack_json).unwrap_or_default();
             GraphEntry {
                 project_hash: e.project_hash,
                 project_name: e.project_name,

@@ -225,10 +225,15 @@ pub fn get_total_stats(conn: &Connection) -> anyhow::Result<TotalStats> {
         },
     )?;
     let graphs_saved: u64 = conn
-        .query_row("SELECT COUNT(*) FROM session_graphs", [], |r| r.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM session_graphs", [], |r| {
+            r.get::<_, i64>(0)
+        })
         .unwrap_or(0)
         .unsigned_abs();
-    Ok(TotalStats { graphs_saved, ..row })
+    Ok(TotalStats {
+        graphs_saved,
+        ..row
+    })
 }
 
 /// Build a full DashboardStats struct for the given date.
@@ -417,7 +422,9 @@ pub fn list_graphs(conn: &Connection) -> anyhow::Result<Vec<GraphEntry>> {
                 token_count: row.get(2)?,
                 created_at: row.get(3)?,
                 last_updated: row.get(4)?,
-                stack_json: row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "[]".into()),
+                stack_json: row
+                    .get::<_, Option<String>>(5)?
+                    .unwrap_or_else(|| "[]".into()),
                 current_task: row.get(6)?,
             })
         })?
@@ -431,9 +438,9 @@ pub fn list_graphs(conn: &Connection) -> anyhow::Result<Vec<GraphEntry>> {
 /// Count sessions grouped by tool for the tool distribution payload.
 /// Returns a JSON object string like `{"claude-code":12,"cursor":3}`.
 pub fn get_tool_usage_json(conn: &Connection) -> String {
-    let mut stmt = match conn.prepare(
-        "SELECT COALESCE(tool, 'unknown'), COUNT(*) FROM sessions GROUP BY tool",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT COALESCE(tool, 'unknown'), COUNT(*) FROM sessions GROUP BY tool")
+    {
         Ok(s) => s,
         Err(_) => return "{}".into(),
     };
@@ -451,9 +458,7 @@ pub fn get_tool_usage_json(conn: &Connection) -> String {
 /// Count requests grouped by model for the model distribution payload.
 /// Returns a JSON object string like `{"claude-sonnet-4-5":100,"gpt-4o":20}`.
 pub fn get_model_usage_json(conn: &Connection) -> String {
-    let mut stmt = match conn.prepare(
-        "SELECT model, COUNT(*) FROM requests GROUP BY model",
-    ) {
+    let mut stmt = match conn.prepare("SELECT model, COUNT(*) FROM requests GROUP BY model") {
         Ok(s) => s,
         Err(_) => return "{}".into(),
     };

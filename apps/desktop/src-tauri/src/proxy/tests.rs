@@ -28,7 +28,10 @@ mod proxy_tests {
     #[test]
     fn detect_anthropic_via_bearer_sk_ant() {
         let mut headers = HeaderMap::new();
-        headers.insert("authorization", "Bearer sk-ant-api03-abc123".parse().unwrap());
+        headers.insert(
+            "authorization",
+            "Bearer sk-ant-api03-abc123".parse().unwrap(),
+        );
         let provider = forward::detect_provider(&headers);
         assert_eq!(provider.as_str(), "anthropic");
     }
@@ -68,9 +71,26 @@ mod proxy_tests {
 
     #[test]
     fn extract_api_key_returns_none_when_missing() {
+        // Save and clear env vars that extract_api_key falls back to
+        let saved = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
+            .map(|k| std::env::var(k).ok());
+        for k in &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"] {
+            std::env::remove_var(k);
+        }
+
         let headers = HeaderMap::new();
         let key = forward::extract_api_key(&headers, &forward::Provider::Anthropic);
         assert_eq!(key, None);
+
+        // Restore
+        for (k, v) in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
+            .iter()
+            .zip(saved)
+        {
+            if let Some(val) = v {
+                std::env::set_var(k, val);
+            }
+        }
     }
 
     // ── Token estimation ─────────────────────────────────────────────

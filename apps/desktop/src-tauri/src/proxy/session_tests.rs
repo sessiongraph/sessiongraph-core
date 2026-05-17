@@ -1,6 +1,7 @@
 //! Session lifecycle, hashing, and timeout tests.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod session_tests {
     use chrono::Utc;
 
@@ -198,7 +199,9 @@ mod session_tests {
 
     #[test]
     fn infer_project_name_from_github_url() {
-        let name = session::infer_project_name(Some("working on https://github.com/user/my-repo/issues/5"));
+        let name = session::infer_project_name(Some(
+            "working on https://github.com/user/my-repo/issues/5",
+        ));
         assert_eq!(name, Some("my-repo".into()));
     }
 

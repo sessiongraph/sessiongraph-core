@@ -79,7 +79,8 @@ pub fn init_db() -> anyhow::Result<Connection> {
 
     // Run migration
     let migration_sql = include_str!("migrations/001_init.sql");
-    conn.execute_batch(migration_sql).context("failed to run migration 001")?;
+    conn.execute_batch(migration_sql)
+        .context("failed to run migration 001")?;
 
     tracing::info!("Database initialized at {}", db_path.display());
     Ok(conn)

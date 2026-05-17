@@ -27,16 +27,24 @@ pub fn run() {
     // Initialize the database
     let conn = db::init_db().expect("Failed to initialize SessionGraph database");
 
+    // Read proxy port from settings (before connection is consumed by InterceptState)
+    let proxy_port: u16 = crate::db::queries::get_setting(&conn, "proxy_port")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4200);
+
     // Build the shared application state
-    let state = Arc::new(proxy::InterceptState::new(conn));
+    let state = Arc::new(proxy::InterceptState::new(conn, proxy_port));
 
     // Set up the proxy shutdown channel
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     // Start the proxy server in the background
     let proxy_state = state.clone();
+    let proxy_port_server = proxy_port;
     tauri::async_runtime::spawn(async move {
-        proxy::server::start(proxy_state, 4200, shutdown_rx).await;
+        proxy::server::start(proxy_state, proxy_port_server, shutdown_rx).await;
     });
 
     tracing::info!("SessionGraph v{} starting", env!("CARGO_PKG_VERSION"));
@@ -96,7 +104,7 @@ impl Drop for ProxyShutdown {
         }
         // End all active sessions synchronously via block_in_place
         let state = self.state.clone();
-        let _ = tokio::task::block_in_place(|| {
+        tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 state.end_all_sessions().await;
             })

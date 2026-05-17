@@ -10,8 +10,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::extract::Path;
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -107,33 +107,34 @@ struct CurrentSessionResponse {
 /// `GET /stats` — live dashboard stats.
 async fn stats_handler(State(state): State<Arc<InterceptState>>) -> Json<StatsResponse> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-
-    let (today_stats, total_stats) = {
-        if let Ok(db) = state.db.lock() {
-            (
-                crate::db::queries::get_today_stats(&db, &today).ok(),
-                crate::db::queries::get_total_stats(&db).ok(),
-            )
-        } else {
-            (None, None)
-        }
-    };
+    let db = state.db.clone();
+    let (today_stats, total_stats) = super::intercept::with_db(db, move |conn| {
+        (
+            crate::db::queries::get_today_stats(conn, &today).ok(),
+            crate::db::queries::get_total_stats(conn).ok(),
+        )
+    })
+    .await
+    .unwrap_or((None, None));
 
     let (current_session, active_sessions) = {
         let sessions = state.active_sessions.lock().await;
-        let all: Vec<CurrentSessionResponse> = sessions.iter().map(|s| CurrentSessionResponse {
-            id: s.id.clone(),
-            active: true,
-            tokens_in_raw: s.tokens_in_raw,
-            tokens_in_sent: s.tokens_in_sent,
-            compression_ratio: if s.tokens_in_raw > 0 {
-                s.tokens_in_sent as f64 / s.tokens_in_raw as f64
-            } else {
-                0.0
-            },
-            provider: s.provider.clone(),
-            project_name: s.project_name.clone(),
-        }).collect();
+        let all: Vec<CurrentSessionResponse> = sessions
+            .iter()
+            .map(|s| CurrentSessionResponse {
+                id: s.id.clone(),
+                active: true,
+                tokens_in_raw: s.tokens_in_raw,
+                tokens_in_sent: s.tokens_in_sent,
+                compression_ratio: if s.tokens_in_raw > 0 {
+                    s.tokens_in_sent as f64 / s.tokens_in_raw as f64
+                } else {
+                    0.0
+                },
+                provider: s.provider.clone(),
+                project_name: s.project_name.clone(),
+            })
+            .collect();
         let first = all.first().cloned();
         (first, all)
     };
@@ -161,11 +162,20 @@ async fn sessions_handler(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let page: u32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let per_page: u32 = params.get("per_page").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let per_page: u32 = params
+        .get("per_page")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
 
-    let db = match state.db.lock() {
-        Ok(d) => d,
-        Err(_) => {
+    let db = state.db.clone();
+    let result = super::intercept::with_db(db, move |conn| {
+        crate::db::queries::list_sessions_paginated(conn, page, per_page)
+    })
+    .await;
+
+    let result = match result {
+        Some(r) => r,
+        None => {
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to access database",
@@ -174,7 +184,7 @@ async fn sessions_handler(
         }
     };
 
-    match crate::db::queries::list_sessions_paginated(&db, page, per_page) {
+    match result {
         Ok((items, total)) => {
             #[derive(Serialize)]
             struct SessionsResponse {
@@ -207,9 +217,15 @@ async fn session_graph_handler(
     State(state): State<Arc<InterceptState>>,
     Path(project_hash): Path<String>,
 ) -> Response {
-    let db = match state.db.lock() {
-        Ok(d) => d,
-        Err(_) => {
+    let db = state.db.clone();
+    let result = super::intercept::with_db(db, move |conn| {
+        crate::db::queries::get_latest_graph_json(conn, &project_hash)
+    })
+    .await;
+
+    let result = match result {
+        Some(r) => r,
+        None => {
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to access database",
@@ -218,7 +234,7 @@ async fn session_graph_handler(
         }
     };
 
-    match crate::db::queries::get_latest_graph_json(&db, &project_hash) {
+    match result {
         Ok(Some(graph_json)) => {
             // Parse and return the JSON with proper content-type
             match serde_json::from_str::<serde_json::Value>(&graph_json) {
@@ -233,13 +249,11 @@ async fn session_graph_handler(
                 }
             }
         }
-        Ok(None) => {
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                "No session graph found for this project",
-            )
-                .into_response()
-        }
+        Ok(None) => (
+            axum::http::StatusCode::NOT_FOUND,
+            "No session graph found for this project",
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to get session graph: {}", e);
             (

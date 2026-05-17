@@ -43,6 +43,7 @@ pub fn end_session(conn: &Connection, id: &str, ended_at: &str) -> anyhow::Resul
 }
 
 /// Increment a session's counters after each request.
+#[allow(clippy::too_many_arguments)]
 pub fn increment_session(
     conn: &Connection,
     id: &str,
@@ -125,6 +126,7 @@ pub fn insert_request(
 // ── Daily usage ───────────────────────────────────────────────────────────
 
 /// Upsert today's token usage row for a given provider.
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_daily_usage(
     conn: &Connection,
     date: &str,
@@ -244,6 +246,7 @@ pub fn get_dashboard_stats_for_date(
 
 /// Store (or replace) a session graph. Uses ON CONFLICT REPLACE per the
 /// UNIQUE(project_hash) constraint — only the latest graph per project is kept.
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_session_graph(
     conn: &Connection,
     id: &str,
@@ -284,9 +287,7 @@ pub fn get_latest_graph_json(
     conn: &Connection,
     project_hash: &str,
 ) -> anyhow::Result<Option<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT graph_json FROM session_graphs WHERE project_hash = ?1",
-    )?;
+    let mut stmt = conn.prepare("SELECT graph_json FROM session_graphs WHERE project_hash = ?1")?;
     let mut rows = stmt.query_map(rusqlite::params![project_hash], |row| {
         row.get::<_, String>(0)
     })?;
@@ -369,7 +370,7 @@ pub fn delete_all_data(conn: &Connection) -> anyhow::Result<()> {
          DELETE FROM sessions;
          DELETE FROM settings WHERE key NOT IN ('proxy_port', 'session_timeout_minutes',
            'compression_enabled', 'graph_injection_enabled', 'graph_max_tokens', 'tier',
-           'sessions_saved_this_month', 'onboarding_complete');"
+           'sessions_saved_this_month', 'onboarding_complete');",
     )?;
     Ok(())
 }

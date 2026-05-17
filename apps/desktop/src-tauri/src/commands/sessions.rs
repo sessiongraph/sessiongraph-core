@@ -93,10 +93,7 @@ pub fn get_session_graph(
 }
 
 #[tauri::command]
-pub fn delete_session_graph(
-    state: tauri::State<'_, Arc<InterceptState>>,
-    project_hash: String,
-) {
+pub fn delete_session_graph(state: tauri::State<'_, Arc<InterceptState>>, project_hash: String) {
     if let Ok(db) = state.db.lock() {
         let _ = db.execute(
             "DELETE FROM session_graphs WHERE project_hash = ?1",

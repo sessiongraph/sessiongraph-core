@@ -59,19 +59,22 @@ pub async fn get_dashboard_stats(
 
     let (current_session, active_sessions) = {
         let sessions = state.active_sessions.lock().await;
-        let all: Vec<CurrentSession> = sessions.iter().map(|s| CurrentSession {
-            id: s.id.clone(),
-            active: true,
-            tokens_in_raw: s.tokens_in_raw,
-            tokens_in_sent: s.tokens_in_sent,
-            compression_ratio: if s.tokens_in_raw > 0 {
-                s.tokens_in_sent as f64 / s.tokens_in_raw as f64
-            } else {
-                0.0
-            },
-            provider: s.provider.clone(),
-            project_name: s.project_name.clone(),
-        }).collect();
+        let all: Vec<CurrentSession> = sessions
+            .iter()
+            .map(|s| CurrentSession {
+                id: s.id.clone(),
+                active: true,
+                tokens_in_raw: s.tokens_in_raw,
+                tokens_in_sent: s.tokens_in_sent,
+                compression_ratio: if s.tokens_in_raw > 0 {
+                    s.tokens_in_sent as f64 / s.tokens_in_raw as f64
+                } else {
+                    0.0
+                },
+                provider: s.provider.clone(),
+                project_name: s.project_name.clone(),
+            })
+            .collect();
         let first = all.first().cloned();
         (first, all)
     };
@@ -117,8 +120,8 @@ pub fn get_token_usage_chart(
     days: u32,
 ) -> Result<Vec<DailyTokenUsage>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let rows = crate::db::queries::get_token_usage_last_n_days(&db, days)
-        .map_err(|e| e.to_string())?;
+    let rows =
+        crate::db::queries::get_token_usage_last_n_days(&db, days).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|(date, tokens_raw, tokens_sent)| DailyTokenUsage {

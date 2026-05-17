@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useDashboardStore } from "../stores/dashboard";
-import { tauri, type DailyTokenUsage } from "../lib/tauri";
+import { tauri, type DailyTokenUsage, type ProxyStatus } from "../lib/tauri";
 import SessionList from "./SessionList";
 import SessionDetail from "./SessionDetail";
 
@@ -26,6 +26,12 @@ function fmtCount(n: number, unit: string): string {
 export default function Dashboard() {
   const { stats, connected, fetchStats } = useDashboardStore();
   const [chartData, setChartData] = useState<DailyTokenUsage[]>([]);
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
+
+  // Fetch proxy status once at mount for dynamic port display
+  useEffect(() => {
+    void tauri.getProxyStatus().then(setProxyStatus);
+  }, []);
 
   // Poll the backend every 5 seconds
   useEffect(() => {
@@ -161,7 +167,7 @@ export default function Dashboard() {
           <p className="text-text-secondary">
             No active session detected. Point your AI coding tool at
             <code className="mx-1 rounded bg-surface px-1.5 py-0.5 text-sm text-accent">
-              http://localhost:4200
+              http://localhost:{proxyStatus?.port ?? 4200}
             </code>
             and start a conversation.
           </p>

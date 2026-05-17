@@ -193,8 +193,9 @@ fn parse_and_validate_graph(
         .unwrap_or(text)
         .trim();
 
-    let mut graph: SessionGraph =
-        serde_json::from_str(cleaned).with_context(|| "failed to parse extraction JSON").ok()?;
+    let mut graph: SessionGraph = serde_json::from_str(cleaned)
+        .with_context(|| "failed to parse extraction JSON")
+        .ok()?;
 
     // Override fields we own — the model may hallucinate these
     graph.session_id = session_id.to_string();
@@ -210,18 +211,12 @@ fn parse_and_validate_graph(
     Some(graph)
 }
 
-/// Truncate text to roughly `max_chars` characters, keeping the last portion
+/// Truncate text to `max_chars` characters, keeping the last portion
 /// (most recent messages are at the end).
-fn truncate_text(text: &str, max_chars: usize) -> &str {
-    if text.len() <= max_chars {
-        return text;
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
     }
-    // Keep the trailing portion (most recent conversation)
-    let start = text.len() - max_chars;
-    // Walk back to a UTF-8 char boundary
-    let mut idx = start;
-    while idx < text.len() && !text.is_char_boundary(idx) {
-        idx += 1;
-    }
-    &text[idx..]
+    chars[chars.len() - max_chars..].iter().collect()
 }

@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Output from the Python compression subprocess.
 #[derive(Debug, Clone, Deserialize)]
@@ -24,7 +25,7 @@ pub struct CompressOutput {
 /// Input sent to the Python compression subprocess.
 #[derive(Debug, Serialize)]
 struct CompressInput<'a> {
-    messages: &'a Vec<serde_json::Value>,
+    messages: &'a [serde_json::Value],
     model: &'a str,
 }
 
@@ -32,21 +33,35 @@ struct CompressInput<'a> {
 ///
 /// Returns `Some(CompressOutput)` with the compressed messages and metrics on
 /// success, or `None` if compression fails (graceful fallback to original).
-pub async fn compress(
-    messages: &[serde_json::Value],
-    model: &str,
-) -> Option<CompressOutput> {
+pub async fn compress(messages: &[serde_json::Value], model: &str) -> Option<CompressOutput> {
     let python_path = venv_python_path()?;
 
-    let input = CompressInput {
-        messages: &messages.to_vec(),
-        model,
-    };
+    let input = CompressInput { messages, model };
 
     let input_json = serde_json::to_string(&input).ok()?;
 
+    // Write input JSON to a temp file — avoids leaking request data via
+    // command-line arguments (ps aux / Process Explorer).
+    let temp_dir = std::env::temp_dir().join("sessiongraph-compress");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let temp_file = temp_dir.join(format!("{}.json", Uuid::new_v4()));
+    if std::fs::write(&temp_file, &input_json).is_err() {
+        tracing::warn!("Compression: failed to write temp input file");
+        return None;
+    }
+
+    // Ensure the Python wrapper script exists
+    if let Err(e) = ensure_wrapper_exists() {
+        tracing::warn!("Compression: failed to create wrapper script: {}", e);
+        let _ = std::fs::remove_file(&temp_file);
+        return None;
+    }
+
     let result = tokio::process::Command::new(&python_path)
-        .args(["-m", "headroom.compress", "--input-json", &input_json, "--mode", "token", "--output-json"])
+        .args([
+            wrapper_script_path()?.to_string_lossy().as_ref(),
+            &temp_file.to_string_lossy(),
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -56,11 +71,11 @@ pub async fn compress(
     let child = result;
 
     // Read output with a 15-second timeout
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        child.wait_with_output(),
-    )
-    .await;
+    let output =
+        tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output()).await;
+
+    // Clean up temp file regardless of outcome
+    let _ = std::fs::remove_file(&temp_file);
 
     let output = match output {
         Ok(Ok(o)) => o,
@@ -109,6 +124,52 @@ pub async fn compress(
             None
         }
     }
+}
+
+/// Return the path to the Python wrapper script used for compression.
+fn wrapper_script_path() -> Option<PathBuf> {
+    let home = if cfg!(windows) {
+        std::env::var("USERPROFILE").ok()?
+    } else {
+        std::env::var("HOME").ok()?
+    };
+    Some(
+        PathBuf::from(home)
+            .join(".sessiongraph")
+            .join("compress_wrapper.py"),
+    )
+}
+
+/// Ensure the Python wrapper script exists, creating it if necessary.
+/// The wrapper reads the input JSON from a file (first CLI arg) and relays
+/// it to headroom.compress, keeping the payload data out of process argv.
+fn ensure_wrapper_exists() -> Result<(), String> {
+    let path = wrapper_script_path().ok_or("Cannot determine home directory")?;
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create dir: {e}"))?;
+    }
+    std::fs::write(
+        &path,
+        r#"import json, sys, pathlib
+
+# Read the input payload from a file path (first CLI arg) so the
+# request data never appears in the process command line.
+input_file = pathlib.Path(sys.argv[1])
+payload = input_file.read_text()
+
+# Trick headroom's CLI argparser into reading from our variable
+sys.argv = ["compress", "--input-json", payload, "--mode", "token", "--output-json"]
+
+# Run headroom.compress.main() in the same process
+import headroom.compress as hc
+hc.main()
+"#,
+    )
+    .map_err(|e| format!("Cannot write wrapper: {e}"))?;
+    Ok(())
 }
 
 /// Resolve the path to the Python executable inside the SessionGraph venv.

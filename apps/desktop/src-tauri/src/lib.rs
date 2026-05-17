@@ -8,11 +8,18 @@
 pub mod commands;
 pub mod db;
 pub mod graph;
+pub mod license;
 pub mod proxy;
 pub mod venv;
 
 use std::sync::Arc;
 use tauri::Manager;
+
+/// Tauri IPC command — returns the current license status from the local JWT.
+#[tauri::command]
+fn get_license_status() -> license::LicenseStatus {
+    license::get_license_status()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -105,6 +112,49 @@ pub fn run() {
         proxy::server::start(proxy_state, proxy_port_server, shutdown_rx).await;
     });
 
+    // Spawn daily license phone-home: check immediately then every 24 hours.
+    tauri::async_runtime::spawn(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+        // Initial check shortly after startup
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        license::phone_home(&client).await;
+        // Repeat every 24 hours
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(86_400));
+        interval.tick().await; // consume the first immediate tick
+        loop {
+            interval.tick().await;
+            license::phone_home(&client).await;
+        }
+    });
+
+    // Spawn daily usage sync: runs 60 s after startup then every 24 hours.
+    // Reports aggregate stats from the local SQLite DB to SG_SERVER_URL/api/usage/sync
+    // using the license JWT for authentication. Non-fatal — any error is logged only.
+    {
+        let usage_db = state.db.clone();
+        tauri::async_runtime::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_default();
+
+            // Initial sync shortly after startup (after phone-home at 30 s)
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            sync_daily_usage(&client, &usage_db).await;
+
+            // Repeat every 24 hours
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(86_400));
+            interval.tick().await; // consume the first immediate tick
+            loop {
+                interval.tick().await;
+                sync_daily_usage(&client, &usage_db).await;
+            }
+        });
+    }
+
     tracing::info!("SessionGraph v{} starting", env!("CARGO_PKG_VERSION"));
 
     let shutdown_state = state.clone();
@@ -142,6 +192,7 @@ pub fn run() {
             commands::settings::get_cli_profile_status,
             commands::settings::add_cli_profile,
             commands::settings::remove_cli_profile,
+            get_license_status,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -150,6 +201,92 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Read a u64 stat from the settings table, returning 0 if absent or unparseable.
+fn read_stat_u64(conn: &rusqlite::Connection, key: &str) -> u64 {
+    crate::db::queries::get_setting(conn, key)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Read an f64 stat from the settings table, returning 0.0 if absent or unparseable.
+fn read_stat_f64(conn: &rusqlite::Connection, key: &str) -> f64 {
+    crate::db::queries::get_setting(conn, key)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// POST today's aggregate usage stats to `SG_SERVER_URL/api/usage/sync`.
+///
+/// Reads cumulative counters out of the local SQLite settings table.  If any
+/// key is absent the value is treated as 0 so the call still succeeds.
+/// Non-fatal — all errors are logged and silently swallowed.
+async fn sync_daily_usage(
+    client: &reqwest::Client,
+    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+) {
+    // Need a license key to authenticate
+    let Some(lf) = license::read_license_file() else {
+        tracing::debug!("No license file — skipping usage sync");
+        return;
+    };
+
+    // Read stats from the settings table inside a blocking closure so we
+    // don't hold the Mutex across an await point.
+    let stats: Option<(u64, u64, u64, u32, f64)> = tokio::task::spawn_blocking({
+        let db = db.clone();
+        move || {
+            let conn = db.lock().ok()?;
+            let tokens_compressed = read_stat_u64(&conn, "tokens_compressed_total");
+            let tokens_saved = read_stat_u64(&conn, "tokens_saved_total");
+            let sessions_restored = read_stat_u64(&conn, "sessions_restored_total");
+            let sessions_saved = read_stat_u64(&conn, "sessions_saved_this_month") as u32;
+            let cost_saved_usd = read_stat_f64(&conn, "cost_saved_usd_total");
+            Some((tokens_compressed, tokens_saved, sessions_restored, sessions_saved, cost_saved_usd))
+        }
+    })
+    .await
+    .unwrap_or(None);
+
+    let Some((tokens_compressed, tokens_saved, sessions_restored, sessions_saved, cost_saved_usd)) =
+        stats
+    else {
+        tracing::warn!("Usage sync: could not acquire DB lock");
+        return;
+    };
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    let server_url = std::env::var("SG_SERVER_URL")
+        .unwrap_or_else(|_| "https://sessiongraph.dev".into());
+    let url = format!("{}/api/usage/sync", server_url);
+
+    let payload = serde_json::json!({
+        "licenseKey": lf.key,
+        "date": today,
+        "tokensCompressed": tokens_compressed,
+        "tokensSaved": tokens_saved,
+        "sessionsRestored": sessions_restored,
+        "sessionsSaved": sessions_saved,
+        "costSavedUsd": cost_saved_usd,
+    });
+
+    match client.post(&url).json(&payload).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::info!("Usage sync succeeded for {}", today);
+        }
+        Ok(resp) => {
+            tracing::warn!("Usage sync: server returned HTTP {}", resp.status());
+        }
+        Err(e) => {
+            tracing::debug!("Usage sync failed (offline?): {}", e);
+        }
+    }
 }
 
 /// Holds the oneshot sender for clean proxy shutdown, and a reference

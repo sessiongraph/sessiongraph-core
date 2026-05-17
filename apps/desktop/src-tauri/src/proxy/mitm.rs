@@ -203,7 +203,13 @@ async fn handle_one_request(
     let parts: Vec<&str> = request_line.splitn(3, ' ').collect();
     if parts.len() < 2 {
         let empty_headers = HeaderMap::new();
-        write_response(stream, StatusCode::BAD_REQUEST, &empty_headers, b"Bad Request").await?;
+        write_response(
+            stream,
+            StatusCode::BAD_REQUEST,
+            &empty_headers,
+            b"Bad Request",
+        )
+        .await?;
         return Ok(false);
     }
     let method: Method = parts[0].parse().unwrap_or(Method::GET);
@@ -277,7 +283,11 @@ async fn handle_one_request(
             tracing::debug!(
                 "MITM transparent forward: {} {}://{}:{}{}",
                 method,
-                if upstream_port == 443 { "https" } else { "http" },
+                if upstream_port == 443 {
+                    "https"
+                } else {
+                    "http"
+                },
                 upstream_host,
                 upstream_port,
                 raw_path,
@@ -341,8 +351,8 @@ async fn forward_to_upstream(
     let url = format!("{}://{}:{}{}", scheme, host, port, path);
 
     let method_str = parts.first().copied().unwrap_or("POST");
-    let method = reqwest::Method::from_bytes(method_str.as_bytes())
-        .unwrap_or(reqwest::Method::POST);
+    let method =
+        reqwest::Method::from_bytes(method_str.as_bytes()).unwrap_or(reqwest::Method::POST);
 
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -351,7 +361,14 @@ async fn forward_to_upstream(
 
     let mut req = http_client.request(method, &url);
     // Forward original headers (skip hop-by-hop)
-    let skip = ["host", "connection", "keep-alive", "transfer-encoding", "te", "upgrade"];
+    let skip = [
+        "host",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "te",
+        "upgrade",
+    ];
     for (name, value) in headers.iter() {
         let name_lower = name.as_str().to_lowercase();
         if !skip.contains(&name_lower.as_str()) {
@@ -375,7 +392,12 @@ async fn forward_to_upstream(
         .await?;
 
     let upstream_headers = upstream_response.headers().clone();
-    let skip_resp = ["transfer-encoding", "content-length", "connection", "keep-alive"];
+    let skip_resp = [
+        "transfer-encoding",
+        "content-length",
+        "connection",
+        "keep-alive",
+    ];
     for (name, value) in upstream_headers.iter() {
         let name_lower = name.as_str().to_lowercase();
         if skip_resp.contains(&name_lower.as_str()) {
@@ -459,7 +481,12 @@ async fn stream_response(
 
     // Forward headers, skipping hop-by-hop and rewriting transfer encoding
     // to chunked so we can stream without knowing the total length upfront.
-    let skip = ["transfer-encoding", "content-length", "connection", "keep-alive"];
+    let skip = [
+        "transfer-encoding",
+        "content-length",
+        "connection",
+        "keep-alive",
+    ];
     for (name, value) in headers.iter() {
         let name_lower = name.as_str().to_lowercase();
         if skip.contains(&name_lower.as_str()) {
@@ -515,7 +542,9 @@ async fn read_line(
                 if buf.is_empty() {
                     return Err("EOF".into());
                 }
-                return Ok(String::from_utf8_lossy(&buf).trim_end_matches('\r').to_string());
+                return Ok(String::from_utf8_lossy(&buf)
+                    .trim_end_matches('\r')
+                    .to_string());
             }
             _ => {
                 if byte[0] == b'\n' {

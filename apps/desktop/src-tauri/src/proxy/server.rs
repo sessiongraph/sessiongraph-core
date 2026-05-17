@@ -35,7 +35,10 @@ async fn anthropic_handler(
     headers: HeaderMap,
     body: Json<serde_json::Value>,
 ) -> Response {
-    let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("-");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
     tracing::info!("→ POST /v1/messages  ua={}", ua);
     match intercept::handle_anthropic(&state, &headers, body.0).await {
         Ok(response) => response,
@@ -50,7 +53,10 @@ async fn openai_handler(
     headers: HeaderMap,
     body: Json<serde_json::Value>,
 ) -> Response {
-    let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("-");
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
     let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("-");
     tracing::info!("→ POST /v1/chat/completions  ua={}  model={}", ua, model);
 
@@ -246,19 +252,17 @@ async fn session_graph_handler(
     };
 
     match result {
-        Ok(Some(graph_json)) => {
-            match serde_json::from_str::<serde_json::Value>(&graph_json) {
-                Ok(parsed) => Json(parsed).into_response(),
-                Err(e) => {
-                    tracing::error!("Failed to parse graph JSON: {}", e);
-                    (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to parse session graph",
-                    )
-                        .into_response()
-                }
+        Ok(Some(graph_json)) => match serde_json::from_str::<serde_json::Value>(&graph_json) {
+            Ok(parsed) => Json(parsed).into_response(),
+            Err(e) => {
+                tracing::error!("Failed to parse graph JSON: {}", e);
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to parse session graph",
+                )
+                    .into_response()
             }
-        }
+        },
         Ok(None) => (
             axum::http::StatusCode::NOT_FOUND,
             "No session graph found for this project",
@@ -460,11 +464,8 @@ pub async fn start(
             break;
         }
 
-        let accept = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            listener.accept(),
-        )
-        .await;
+        let accept =
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept()).await;
 
         let (stream, _peer) = match accept {
             Ok(Ok(s)) => s,

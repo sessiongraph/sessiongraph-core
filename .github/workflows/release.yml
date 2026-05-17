@@ -19,6 +19,9 @@ jobs:
           - platform: macos-intel
             runner: macos-13
             args: --target x86_64-apple-darwin
+          - platform: macos-universal
+            runner: macos-14
+            args: --target universal-apple-darwin
           - platform: windows-x64
             runner: windows-latest
             args: ""
@@ -42,6 +45,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.platform == 'macos-arm64' && 'aarch64-apple-darwin' || matrix.platform == 'macos-intel' && 'x86_64-apple-darwin' || '' }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
 
       - name: Install Linux Tauri deps
         if: matrix.platform == 'linux-x64'
@@ -53,6 +63,22 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Import Apple certificate
+        if: startsWith(matrix.runner, 'macos')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+          security create-keychain -p "" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "" $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
 
@@ -60,6 +86,15 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SG_LICENSE_PUBLIC_KEY: ${{ secrets.SG_LICENSE_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}
@@ -67,3 +102,7 @@ jobs:
           releaseName: "SessionGraph ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
+
+  # Windows code signing: set TAURI_WINDOWS_CERTIFICATE_THUMBPRINT and
+  # TAURI_WINDOWS_SIGN_COMMAND secrets when you have an EV certificate.
+  # See: https://tauri.app/distribute/sign/windows/

@@ -58,7 +58,9 @@ fn license_path() -> anyhow::Result<PathBuf> {
     } else {
         std::env::var("HOME").context("HOME not set")?
     };
-    Ok(PathBuf::from(home).join(".sessiongraph").join("license.json"))
+    Ok(PathBuf::from(home)
+        .join(".sessiongraph")
+        .join("license.json"))
 }
 
 /// Read the license file from disk. Returns `None` if absent or malformed.
@@ -82,14 +84,14 @@ pub fn write_license_file(lf: &LicenseFile) -> anyhow::Result<()> {
 pub fn verify_jwt(jwt: &str) -> anyhow::Result<LicenseClaims> {
     let pem = EMBEDDED_PUBLIC_KEY
         .ok_or_else(|| anyhow::anyhow!("No license public key embedded (dev build)"))?;
-    let key = DecodingKey::from_rsa_pem(pem.as_bytes())
-        .context("Failed to parse embedded public key")?;
+    let key =
+        DecodingKey::from_rsa_pem(pem.as_bytes()).context("Failed to parse embedded public key")?;
 
     let mut validation = Validation::new(Algorithm::RS256);
     validation.leeway = 60; // 60s clock skew tolerance
 
-    let token_data = decode::<LicenseClaims>(jwt, &key, &validation)
-        .context("JWT verification failed")?;
+    let token_data =
+        decode::<LicenseClaims>(jwt, &key, &validation).context("JWT verification failed")?;
 
     Ok(token_data.claims)
 }
@@ -164,8 +166,8 @@ pub async fn phone_home(client: &reqwest::Client) {
         return;
     };
 
-    let server_url = std::env::var("SG_SERVER_URL")
-        .unwrap_or_else(|_| "https://sessiongraph.dev".into());
+    let server_url =
+        std::env::var("SG_SERVER_URL").unwrap_or_else(|_| "https://sessiongraph.dev".into());
 
     let url = format!("{}/api/license/validate", server_url);
 

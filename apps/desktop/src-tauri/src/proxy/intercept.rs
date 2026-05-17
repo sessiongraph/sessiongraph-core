@@ -751,11 +751,8 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
                 .flatten()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
-            let _ = queries::set_setting(
-                conn,
-                "sessions_saved_this_month",
-                &(count + 1).to_string(),
-            );
+            let _ =
+                queries::set_setting(conn, "sessions_saved_this_month", &(count + 1).to_string());
         }
     })
     .await

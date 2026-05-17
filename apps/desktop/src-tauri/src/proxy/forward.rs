@@ -172,7 +172,7 @@ async fn stream_post(
 ) -> Result<ForwardResult, ForwardError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
-        .no_proxy()  // never route through system proxy — would loop back to ourselves
+        .no_proxy() // never route through system proxy — would loop back to ourselves
         .build()
         .map_err(|e| ForwardError::BuildClient(e.to_string()))?;
 
@@ -237,14 +237,13 @@ async fn stream_post(
     // background channel so we can parse real usage counts without blocking.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
-    let tee_stream: ByteStream =
-        Box::pin(upstream_response.bytes_stream().map(move |r| match r {
-            Ok(bytes) => {
-                let _ = tx.send(bytes.clone());
-                Ok(bytes)
-            }
-            Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-        }));
+    let tee_stream: ByteStream = Box::pin(upstream_response.bytes_stream().map(move |r| match r {
+        Ok(bytes) => {
+            let _ = tx.send(bytes.clone());
+            Ok(bytes)
+        }
+        Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+    }));
     let axum_body = Body::from_stream(tee_stream);
 
     let input_tokens = Arc::new(AtomicU64::new(0));
@@ -529,18 +528,14 @@ pub fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
             (0.075, 0.30) // Gemini Flash via OpenRouter
         } else if m.contains("gemini") {
             (1.25, 5.0) // Gemini Pro
-        // MiniMax models
+                        // MiniMax models
         } else if m.contains("abab6.5s") {
             (0.10, 0.10)
         } else if m.contains("abab5.5") {
             (0.15, 0.15)
         }
-        // Qwen (Alibaba) models
-        else if m.contains("qwen") {
-            (0.50, 1.50)
-        }
-        // GLM / Zhipu AI models
-        else if m.contains("glm") {
+        // Qwen (Alibaba) and GLM (Zhipu AI) models — same pricing tier
+        else if m.contains("qwen") || m.contains("glm") {
             (0.50, 1.50)
         }
         // Open-source models on OpenRouter / together.ai / etc.

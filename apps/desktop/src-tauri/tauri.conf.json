@@ -28,7 +28,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIzNjcyQUE3RDYyRDA0RUYKUldUdkJDM1dweXBuSTNWYVJrNFlmUGYzelhBSldzcUxKdWZoR2orcGgzeFA3Z1FjT2JnVnlVeVUK",
       "endpoints": [
         "https://sessiongraph.dev/api/updates/{{target}}/{{arch}}/{{current_version}}"
       ],

@@ -1,7 +1,8 @@
 // Dashboard — primary view. See spec section 6.3.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useDashboardStore } from "../stores/dashboard";
+import { tauri, type DailyTokenUsage } from "../lib/tauri";
 import SessionList from "./SessionList";
 import SessionDetail from "./SessionDetail";
 
@@ -24,6 +25,7 @@ function fmtCount(n: number, unit: string): string {
 
 export default function Dashboard() {
   const { stats, connected, fetchStats } = useDashboardStore();
+  const [chartData, setChartData] = useState<DailyTokenUsage[]>([]);
 
   // Poll the backend every 5 seconds
   useEffect(() => {
@@ -31,6 +33,11 @@ export default function Dashboard() {
     const id = setInterval(() => void fetchStats(), 5_000);
     return () => clearInterval(id);
   }, [fetchStats]);
+
+  // Fetch 7-day chart data
+  useEffect(() => {
+    void tauri.getTokenUsageChart(7).then(setChartData).catch(() => {});
+  }, [stats?.today?.requests]);
 
   const today = stats?.today;
   const total = stats?.total;
@@ -152,6 +159,16 @@ export default function Dashboard() {
         </section>
       )}
 
+      {/* ── 7-day token usage chart ────────────────── */}
+      {chartData.length > 0 && (
+        <section className="mt-8 rounded-lg border border-border bg-surface p-5">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-4">
+            Token Usage — Last 7 Days
+          </h3>
+          <TokenChart data={chartData} />
+        </section>
+      )}
+
       <SessionList />
       <SessionDetail />
     </main>
@@ -186,5 +203,64 @@ function StatCard({
       <p className={`mt-2 text-2xl font-semibold ${valueColor}`}>{value}</p>
       {sub && <p className="mt-1 text-xs text-text-secondary">{sub}</p>}
     </div>
+  );
+}
+
+// ── Token usage bar chart (inline SVG) ────────────────────────────
+
+function TokenChart({ data }: { data: DailyTokenUsage[] }) {
+  const maxTokens = Math.max(...data.map((d) => Math.max(d.tokens_raw, d.tokens_sent)), 1);
+  const w = 500;
+  const h = 140;
+  const barW = Math.max(8, Math.floor((w - 40) / data.length / 2) - 2);
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
+      {data.map((d, i) => {
+        const xRaw = 30 + i * (barW * 2 + 6);
+        const xSent = xRaw + barW + 2;
+        const hRaw = Math.max(2, (d.tokens_raw / maxTokens) * (h - 24));
+        const hSent = Math.max(2, (d.tokens_sent / maxTokens) * (h - 24));
+
+        return (
+          <g key={d.date}>
+            <rect
+              x={xRaw}
+              y={h - hRaw - 14}
+              width={barW}
+              height={hRaw}
+              fill="#71717a"
+              rx={1}
+            >
+              <title>Raw: {fmtTokens(d.tokens_raw)}</title>
+            </rect>
+            <rect
+              x={xSent}
+              y={h - hSent - 14}
+              width={barW}
+              height={hSent}
+              fill="#22c55e"
+              rx={1}
+            >
+              <title>Sent: {fmtTokens(d.tokens_sent)}</title>
+            </rect>
+            <text
+              x={xRaw + barW}
+              y={h - 2}
+              textAnchor="middle"
+              className="fill-text-secondary"
+              fontSize="9"
+            >
+              {d.date.slice(5)}
+            </text>
+          </g>
+        );
+      })}
+      {/* Legend */}
+      <rect x={30} y={2} width={8} height={8} fill="#71717a" rx={1} />
+      <text x={42} y={10} className="fill-text-secondary" fontSize="9">Raw</text>
+      <rect x={70} y={2} width={8} height={8} fill="#22c55e" rx={1} />
+      <text x={82} y={10} className="fill-text-secondary" fontSize="9">Compressed</text>
+    </svg>
   );
 }

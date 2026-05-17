@@ -25,7 +25,7 @@ use crate::graph::injector;
 pub struct InterceptState {
     /// SQLite connection (blocking — wrapped in Arc<Mutex<>> for Send + Clone)
     pub db: Arc<Mutex<Connection>>,
-    /// In-memory active session tracker keyed by project_hash
+    /// In-memory active session tracker keyed by (project_hash, provider, api_key_hash)
     pub active_sessions: TokioMutex<Vec<ActiveSession>>,
     /// When the proxy started (for uptime)
     pub start_time: Instant,
@@ -84,28 +84,30 @@ impl InterceptState {
             Err("No restart channel available".to_string())
         }
     }
-}
 
-/// The result of running the pipeline for one request.
-#[derive(Debug)]
-pub struct PipelineLog {
-    pub session_id: String,
-    pub request_id: String,
-    pub sequence: u32,
-    pub project_hash: String,
-    pub provider: String,
-    pub model: String,
-    pub tokens_in_raw: u64,
-    pub tokens_in_sent: u64,
-    pub tokens_out: u64,
-    pub compression_ratio: Option<f64>,
-    pub graph_injected: bool,
-    pub graph_tokens: u32,
-    pub latency_ms: u64,
-    pub cost_usd_raw: f64,
-    pub cost_usd_actual: f64,
-    pub is_new_session: bool,
-    pub session_ended: bool,
+    /// End all active sessions and write them to the database.
+    /// Called on app shutdown so sessions don't remain 'active' forever.
+    pub async fn end_all_sessions(&self) {
+        let mut sessions = self.active_sessions.lock().await;
+        let now = Utc::now().to_rfc3339();
+
+        let db = match self.db.lock() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!("Failed to lock DB for shutdown session ending: {}", e);
+                return;
+            }
+        };
+
+        for s in sessions.drain(..) {
+            let _ = queries::end_session(&db, &s.id, &now);
+            tracing::info!("Session {} ended (app shutdown)", s.id);
+
+            // Spawn extraction for each ended session
+            let db_clone = self.db.clone();
+            tokio::spawn(extract_and_store(db_clone, s));
+        }
+    }
 }
 
 /// Run the full request pipeline for an Anthropic-format request.
@@ -120,6 +122,7 @@ pub async fn handle_anthropic(
 
     // 1. Session identification
     let api_key = forward::extract_api_key(headers, &provider).unwrap_or_default();
+    let api_key_hash = session::hash_api_key(&api_key);
     let system_prompt = extract_anthropic_system(&body);
     let project_hash = session::compute_project_hash(system_prompt, None);
     let tool = forward::detect_tool(headers, &provider);
@@ -127,17 +130,16 @@ pub async fn handle_anthropic(
     let tokens_in_raw = forward::estimate_tokens(&body);
     let cost_usd_raw = forward::compute_cost(&model, tokens_in_raw, 0);
 
-    // 2. Session lifecycle
+    // 2. Session lifecycle (no token DB writes — that happens after the request)
     let project_name = session::infer_project_name(system_prompt);
     let (session_id, is_new, sequence, ended_session) = manage_session(
         state,
         &project_hash,
+        &api_key_hash,
         project_name,
         &provider_str,
         tool.clone(),
-        &api_key,
         &body,
-        tokens_in_raw,
     )
     .await;
 
@@ -152,7 +154,12 @@ pub async fn handle_anthropic(
     let mut graph_tokens: u32 = 0;
     if is_new && state.graph_injection_enabled {
         if let Ok(db) = state.db.lock() {
-            let result = injector::inject(&db, body.clone(), &project_hash, &provider_str);
+            let graph_max_tokens: u32 = queries::get_setting(&db, "graph_max_tokens")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500);
+            let result = injector::inject(&db, body.clone(), &project_hash, &provider_str, graph_max_tokens);
             graph_injected = result.injected;
             graph_tokens = result.graph_tokens;
             body = result.body;
@@ -162,7 +169,6 @@ pub async fn handle_anthropic(
     // 4. Compression (if enabled)
     let mut tokens_in_sent = tokens_in_raw;
     let mut compression_ratio: Option<f64> = None;
-    let mut cost_usd_actual = cost_usd_raw;
 
     if state.compression_enabled {
         if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
@@ -175,19 +181,16 @@ pub async fn handle_anthropic(
                 } else {
                     None
                 };
-                cost_usd_actual = forward::compute_cost(&model, tokens_in_sent, 0);
-
-                // Update in-memory session counter for accurate live dashboard
-                // After compression, tokens_in_sent is the compressed value
-                // We need to add this (not subtract) to the session's running total
-                let mut sessions = state.active_sessions.lock().await;
-                if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
-                    // First remove the raw value that was added in manage_session,
-                    // then add the compressed value
-                    s.tokens_in_sent = s.tokens_in_sent.saturating_sub(tokens_in_raw);
-                    s.tokens_in_sent = s.tokens_in_sent.saturating_add(tokens_in_sent);
-                }
             }
+        }
+    }
+
+    // Update in-memory session counters for live dashboard
+    {
+        let mut sessions = state.active_sessions.lock().await;
+        if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
+            s.tokens_in_raw += tokens_in_raw;
+            s.tokens_in_sent += tokens_in_sent;
         }
     }
 
@@ -196,56 +199,66 @@ pub async fn handle_anthropic(
     let response = forward_result.response;
     let token_counter = forward_result.token_count;
 
-    // 6. Log with deferred token count
-    // The token count is updated in real-time during streaming.
-    // We spawn a task to read the final count after a short delay.
+    // 6. Log everything in a single background task (waits for output tokens)
     let latency_ms = start.elapsed().as_millis() as u64;
     let request_id = Uuid::new_v4().to_string();
-    let log = PipelineLog {
-        session_id: session_id.clone(),
-        request_id: request_id.clone(),
-        sequence,
-        project_hash,
-        provider: provider_str.clone(),
-        model,
-        tokens_in_raw,
-        tokens_in_sent,
-        tokens_out: 0, // Will be updated by background task
-        compression_ratio,
-        graph_injected,
-        graph_tokens,
-        latency_ms,
-        cost_usd_raw,
-        cost_usd_actual,
-        is_new_session: is_new,
-        session_ended: false,
-    };
-
     let db = state.db.clone();
-    let session_id_for_log = session_id.clone();
-    let model_for_cost = model.clone();
-    tokio::spawn(log_request(db, log));
+    let session_id_clone = session_id.clone();
+    let provider_clone = provider_str.clone();
+    let model_clone = model.clone();
 
-    // Spawn a task to update the token count after the stream completes
-    // The delay gives time for the SSE stream to fully send
-    let db_update = state.db.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        let bytes_out = token_counter.load(std::sync::atomic::Ordering::Relaxed);
-        let tokens_out = forward::bytes_to_tokens(bytes_out);
+        // Wait for the byte stream to flush — poll counter until stable
+        let tokens_out = wait_for_output_tokens(&token_counter).await;
 
-        // Update the session with output tokens
-        if let Ok(db) = db_update.lock() {
-            let cost_out = forward::compute_cost(&model_for_cost, 0, tokens_out);
-            let _ = crate::db::queries::increment_session(
+        let cost_usd_actual_with_out = forward::compute_cost(&model_clone, tokens_in_sent, tokens_out);
+
+        // Update in-memory session tokens_out
+        // (best-effort — sessions lock might be held; fine if skipped, dashboard updates next poll)
+
+        if let Ok(db) = db.lock() {
+            // Insert request row
+            let _ = queries::insert_request(
                 &db,
-                &session_id_for_log,
-                0, // message_count delta
-                0, // tokens_in_raw delta
-                0, // tokens_in_sent delta
+                &request_id,
+                &session_id_clone,
+                sequence,
+                &provider_clone,
+                &model_clone,
+                tokens_in_raw,
+                tokens_in_sent,
                 tokens_out,
-                0.0, // cost_raw delta
-                cost_out,
+                compression_ratio,
+                graph_injected,
+                graph_tokens,
+                latency_ms,
+                cost_usd_raw,
+                cost_usd_actual_with_out,
+            );
+
+            // Upsert daily usage
+            let today = Utc::now().format("%Y-%m-%d").to_string();
+            let _ = queries::upsert_daily_usage(
+                &db,
+                &today,
+                &provider_clone,
+                tokens_in_raw,
+                tokens_in_sent,
+                tokens_out,
+                cost_usd_raw,
+                cost_usd_actual_with_out,
+            );
+
+            // Increment session counters (sole DB writer — no double-counting)
+            let _ = queries::increment_session(
+                &db,
+                &session_id_clone,
+                1,
+                tokens_in_raw,
+                tokens_in_sent,
+                tokens_out,
+                cost_usd_raw,
+                cost_usd_actual_with_out,
             );
         }
     });
@@ -254,7 +267,6 @@ pub async fn handle_anthropic(
 }
 
 /// Run the full request pipeline for an OpenAI-compatible request.
-/// Auto-detects provider (OpenAI, OpenRouter, or custom) from headers.
 pub async fn handle_openai_compatible(
     state: &InterceptState,
     headers: &HeaderMap,
@@ -271,6 +283,7 @@ pub async fn handle_openai_compatible(
 
     // 1. Session identification
     let api_key = forward::extract_api_key(headers, &provider).unwrap_or_default();
+    let api_key_hash = session::hash_api_key(&api_key);
     let system_prompt = extract_openai_system(&body);
     let project_hash = session::compute_project_hash(system_prompt, None);
     let tool = forward::detect_tool(headers, &provider);
@@ -283,16 +296,14 @@ pub async fn handle_openai_compatible(
     let (session_id, is_new, sequence, ended_session) = manage_session(
         state,
         &project_hash,
+        &api_key_hash,
         project_name,
         &provider_str,
         tool.clone(),
-        &api_key,
         &body,
-        tokens_in_raw,
     )
     .await;
 
-    // If a session just ended, spawn extraction task
     if let Some(ended) = ended_session {
         let db = state.db.clone();
         tokio::spawn(extract_and_store(db, ended));
@@ -303,7 +314,12 @@ pub async fn handle_openai_compatible(
     let mut graph_tokens: u32 = 0;
     if is_new && state.graph_injection_enabled {
         if let Ok(db) = state.db.lock() {
-            let result = injector::inject(&db, body.clone(), &project_hash, &provider_str);
+            let graph_max_tokens: u32 = queries::get_setting(&db, "graph_max_tokens")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500);
+            let result = injector::inject(&db, body.clone(), &project_hash, &provider_str, graph_max_tokens);
             graph_injected = result.injected;
             graph_tokens = result.graph_tokens;
             body = result.body;
@@ -313,7 +329,6 @@ pub async fn handle_openai_compatible(
     // 4. Compression (if enabled)
     let mut tokens_in_sent = tokens_in_raw;
     let mut compression_ratio: Option<f64> = None;
-    let mut cost_usd_actual = cost_usd_raw;
 
     if state.compression_enabled {
         if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
@@ -326,15 +341,16 @@ pub async fn handle_openai_compatible(
                 } else {
                     None
                 };
-                cost_usd_actual = forward::compute_cost(&model, tokens_in_sent, 0);
-
-                // Update in-memory session counter for accurate live dashboard
-                let mut sessions = state.active_sessions.lock().await;
-                if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
-                    s.tokens_in_sent = s.tokens_in_sent.saturating_sub(tokens_in_raw);
-                    s.tokens_in_sent = s.tokens_in_sent.saturating_add(tokens_in_sent);
-                }
             }
+        }
+    }
+
+    // Update in-memory session counters
+    {
+        let mut sessions = state.active_sessions.lock().await;
+        if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
+            s.tokens_in_raw += tokens_in_raw;
+            s.tokens_in_sent += tokens_in_sent;
         }
     }
 
@@ -343,52 +359,58 @@ pub async fn handle_openai_compatible(
     let response = forward_result.response;
     let token_counter = forward_result.token_count;
 
-    // 6. Log with deferred token count
+    // 6. Log in single background task
     let latency_ms = start.elapsed().as_millis() as u64;
     let request_id = Uuid::new_v4().to_string();
-    let log = PipelineLog {
-        session_id: session_id.clone(),
-        request_id: request_id.clone(),
-        sequence,
-        project_hash,
-        provider: provider_str.clone(),
-        model,
-        tokens_in_raw,
-        tokens_in_sent,
-        tokens_out: 0,
-        compression_ratio,
-        graph_injected,
-        graph_tokens,
-        latency_ms,
-        cost_usd_raw,
-        cost_usd_actual,
-        is_new_session: is_new,
-        session_ended: false,
-    };
-
     let db = state.db.clone();
-    let session_id_for_log = session_id.clone();
-    let model_for_cost = model.clone();
-    tokio::spawn(log_request(db, log));
+    let session_id_clone = session_id.clone();
+    let provider_clone = provider_str.clone();
+    let model_clone = model.clone();
 
-    // Spawn a task to update the token count after the stream completes
-    let db_update = state.db.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        let bytes_out = token_counter.load(std::sync::atomic::Ordering::Relaxed);
-        let tokens_out = forward::bytes_to_tokens(bytes_out);
+        let tokens_out = wait_for_output_tokens(&token_counter).await;
+        let cost_usd_actual_with_out = forward::compute_cost(&model_clone, tokens_in_sent, tokens_out);
 
-        if let Ok(db) = db_update.lock() {
-            let cost_out = forward::compute_cost(&model_for_cost, 0, tokens_out);
-            let _ = crate::db::queries::increment_session(
+        if let Ok(db) = db.lock() {
+            let _ = queries::insert_request(
                 &db,
-                &session_id_for_log,
-                0,
-                0,
-                0,
+                &request_id,
+                &session_id_clone,
+                sequence,
+                &provider_clone,
+                &model_clone,
+                tokens_in_raw,
+                tokens_in_sent,
                 tokens_out,
-                0.0,
-                cost_out,
+                compression_ratio,
+                graph_injected,
+                graph_tokens,
+                latency_ms,
+                cost_usd_raw,
+                cost_usd_actual_with_out,
+            );
+
+            let today = Utc::now().format("%Y-%m-%d").to_string();
+            let _ = queries::upsert_daily_usage(
+                &db,
+                &today,
+                &provider_clone,
+                tokens_in_raw,
+                tokens_in_sent,
+                tokens_out,
+                cost_usd_raw,
+                cost_usd_actual_with_out,
+            );
+
+            let _ = queries::increment_session(
+                &db,
+                &session_id_clone,
+                1,
+                tokens_in_raw,
+                tokens_in_sent,
+                tokens_out,
+                cost_usd_raw,
+                cost_usd_actual_with_out,
             );
         }
     });
@@ -396,33 +418,64 @@ pub async fn handle_openai_compatible(
     Ok(response)
 }
 
+/// Wait for the output token counter to stabilise.
+/// Polls the atomic counter with exponential backoff up to 5 seconds total.
+async fn wait_for_output_tokens(counter: &std::sync::atomic::AtomicU64) -> u64 {
+    use std::sync::atomic::Ordering;
+
+    let mut last = counter.load(Ordering::Relaxed);
+    let mut stable_ms = 0u64;
+
+    for delay_ms in [50, 100, 200, 400, 800, 800, 800, 800, 800] {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        let current = counter.load(Ordering::Relaxed);
+        if current == last {
+            stable_ms += delay_ms;
+            if stable_ms >= 800 {
+                break;
+            }
+        } else {
+            stable_ms = 0;
+            last = current;
+        }
+    }
+
+    forward::bytes_to_tokens(last)
+}
+
 /// Manage session lifecycle:
-/// - Find or create an active session for the project
+/// - Find or create an active session for (project_hash, provider, api_key_hash)
 /// - If previous session timed out (30 min gap), end it and create new
 /// - Accumulate message bodies for extraction
 ///
 /// Returns (session_id, is_new_session, sequence, optionally_ended_session).
 /// Sequence is the request number within the session (1-indexed).
+///
+/// NOTE: This function handles lifecycle ONLY. Token/cost DB writes happen
+/// in the post-request logging task to avoid double-counting.
 async fn manage_session(
     state: &InterceptState,
     project_hash: &str,
+    api_key_hash: &str,
     project_name: Option<String>,
     provider: &str,
     tool: Option<String>,
-    api_key: &str,
     body: &serde_json::Value,
-    tokens_in_raw: u64,
 ) -> (String, bool, u32, Option<ActiveSession>) {
     let mut sessions = state.active_sessions.lock().await;
     let timeout = state.session_timeout_minutes;
 
     // Check if any session has timed out
     let mut ended: Option<ActiveSession> = None;
+    let lookup_key = (project_hash.to_string(), provider.to_string(), api_key_hash.to_string());
+
     if let Some(idx) = sessions.iter().position(|s| {
-        s.project_hash == project_hash && s.provider == provider && s.is_timed_out(timeout)
+        s.project_hash == lookup_key.0 && s.provider == lookup_key.1
+            && s.api_key_hash == lookup_key.2
+            && s.is_timed_out(timeout)
     }) {
         let mut ended_session = sessions.remove(idx);
-        ended_session.cost_usd_actual = ended_session.cost_usd_raw; // no compression yet
+        ended_session.cost_usd_actual = ended_session.cost_usd_raw;
         ended = Some(ended_session.clone());
 
         // End the session in the database (best-effort)
@@ -440,29 +493,28 @@ async fn manage_session(
     // Find active session or create new one
     if let Some(s) = sessions
         .iter_mut()
-        .find(|s| s.project_hash == project_hash && s.provider == provider)
+        .find(|s| {
+            s.project_hash == lookup_key.0
+                && s.provider == lookup_key.1
+                && s.api_key_hash == lookup_key.2
+        })
     {
-        // Existing session — update counters and accumulate body
+        // Existing session — bump message count and accumulate body
         s.last_request_at = Utc::now();
         s.message_count += 1;
-        let sequence = s.message_count;
-        s.tokens_in_raw += tokens_in_raw;
-        s.tokens_in_sent += tokens_in_raw; // no compression yet
+        let sequence = s.message_count as u32;
         s.push_body(body);
         (s.id.clone(), false, sequence, ended)
     } else {
-        // New session
+        // New session — insert row with zero token/cost counters
         let mut new_session = ActiveSession::new(
             project_hash.to_string(),
+            api_key_hash.to_string(),
             project_name,
             provider.to_string(),
             tool,
-            api_key.to_string(),
         );
         new_session.message_count = 1;
-        let sequence = 1;
-        new_session.tokens_in_raw = tokens_in_raw;
-        new_session.tokens_in_sent = tokens_in_raw;
         new_session.push_body(body);
 
         let id = new_session.id.clone();
@@ -475,7 +527,7 @@ async fn manage_session(
             project_hash,
             provider
         );
-        (id, true, sequence, ended)
+        (id, true, 1, ended)
     }
 }
 
@@ -489,6 +541,19 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
         session.project_hash,
         session.recent_bodies.len()
     );
+
+    // If API key is empty, skip extraction — we can't call the provider
+    if session.api_key.is_empty() {
+        tracing::warn!(
+            "No API key available for session {} — skipping graph extraction",
+            session.id
+        );
+        crate::db::log_error(&format!(
+            "Graph extraction skipped: no API key for session {}",
+            session.id
+        ));
+        return;
+    }
 
     let graph = match session.provider.as_str() {
         "anthropic" => {
@@ -516,6 +581,10 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
             "Graph extraction failed for session {} — continuing without graph",
             session.id
         );
+        crate::db::log_error(&format!(
+            "Graph extraction failed for session {}",
+            session.id
+        ));
         return;
     };
 
@@ -523,6 +592,10 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Failed to serialize extracted graph: {}", e);
+            crate::db::log_error(&format!(
+                "Failed to serialize graph for session {}: {}",
+                session.id, e
+            ));
             return;
         }
     };
@@ -558,6 +631,10 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
         extraction_cost,
     ) {
         tracing::error!("Failed to store extracted graph: {}", e);
+        crate::db::log_error(&format!(
+            "Failed to store graph for session {}: {}",
+            session.id, e
+        ));
         return;
     }
 
@@ -575,70 +652,8 @@ async fn extract_and_store(db: Arc<Mutex<Connection>>, session: ActiveSession) {
     );
 }
 
-/// Log a completed request to the database. Runs in a background task;
-/// errors are logged and silently discarded.
-async fn log_request(db: Arc<Mutex<Connection>>, log: PipelineLog) {
-    let db = match db.lock() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!("Failed to acquire DB lock for request logging: {}", e);
-            return;
-        }
-    };
-
-    let today = Utc::now().format("%Y-%m-%d").to_string();
-    let sequence = log.sequence;
-
-    if let Err(e) = queries::insert_request(
-        &db,
-        &log.request_id,
-        &log.session_id,
-        log.sequence,
-        &log.provider,
-        &log.model,
-        log.tokens_in_raw,
-        log.tokens_in_sent,
-        log.tokens_out,
-        log.compression_ratio,
-        log.graph_injected,
-        log.graph_tokens,
-        log.latency_ms,
-        log.cost_usd_raw,
-        log.cost_usd_actual,
-    ) {
-        tracing::error!("Failed to log request: {}", e);
-        return;
-    }
-
-    if let Err(e) = queries::upsert_daily_usage(
-        &db,
-        &today,
-        &log.provider,
-        log.tokens_in_raw,
-        log.tokens_in_sent,
-        log.tokens_out,
-        log.cost_usd_raw,
-        log.cost_usd_actual,
-    ) {
-        tracing::error!("Failed to upsert daily usage: {}", e);
-    }
-
-    if let Err(e) = queries::increment_session(
-        &db,
-        &log.session_id,
-        1,
-        log.tokens_in_raw,
-        log.tokens_in_sent,
-        log.tokens_out,
-        log.cost_usd_raw,
-        log.cost_usd_actual,
-    ) {
-        tracing::error!("Failed to increment session: {}", e);
-    }
-}
-
 /// Extract the system prompt from an Anthropic request body.
-fn extract_anthropic_system(body: &serde_json::Value) -> Option<&str> {
+pub fn extract_anthropic_system(body: &serde_json::Value) -> Option<&str> {
     body.get("system").and_then(|v| {
         if v.is_string() {
             v.as_str()
@@ -654,7 +669,7 @@ fn extract_anthropic_system(body: &serde_json::Value) -> Option<&str> {
 }
 
 /// Extract the system prompt from an OpenAI request body.
-fn extract_openai_system(body: &serde_json::Value) -> Option<&str> {
+pub fn extract_openai_system(body: &serde_json::Value) -> Option<&str> {
     body.get("messages")
         .and_then(|v| v.as_array())
         .and_then(|msgs| {

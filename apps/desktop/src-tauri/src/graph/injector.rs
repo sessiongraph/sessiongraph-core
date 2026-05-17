@@ -32,11 +32,14 @@ pub struct InjectionResult {
 ///
 /// `provider` should be `"anthropic"` or `"openai"` to handle the different
 /// system prompt locations.
+/// `max_tokens` is the token budget — the graph JSON is truncated if it
+/// exceeds this budget.
 pub fn inject(
     db: &Connection,
     mut body: Value,
     project_hash: &str,
     provider: &str,
+    max_tokens: u32,
 ) -> InjectionResult {
     // Look up the latest graph for this project
     let graph_json: Option<String> = match queries::get_latest_graph_json(db, project_hash) {
@@ -55,7 +58,12 @@ pub fn inject(
         };
     };
 
-    let context_block = format!("{}{}{}", GRAPH_PREFIX, graph_json, GRAPH_SUFFIX);
+    // Enforce token budget: if the graph exceeds max_tokens, truncate by
+    // removing low-priority fields per spec §2.4:
+    //   state > decisions > conventions > files > errors > project
+    let truncated_json = enforce_graph_budget(&graph_json, max_tokens);
+
+    let context_block = format!("{}{}{}", GRAPH_PREFIX, truncated_json, GRAPH_SUFFIX);
     let graph_tokens = (context_block.chars().count() as u32).div_ceil(4);
 
     match provider {
@@ -151,5 +159,55 @@ fn build_openai_content(existing: Option<Value>, context_block: &str) -> Value {
         None => {
             Value::String(context_block.to_string())
         }
+    }
+}
+
+/// Truncate the session graph JSON to fit within `max_tokens` by removing
+/// low-priority fields in order: project, errors, files, conventions, decisions, state.
+/// See spec §2.4 priority order: state > decisions > conventions > files > errors > project.
+fn enforce_graph_budget(graph_json: &str, max_tokens: u32) -> String {
+    let max_chars = max_tokens as usize * 4; // 4 chars ≈ 1 token
+
+    if graph_json.chars().count() <= max_chars {
+        return graph_json.to_string();
+    }
+
+    // Parse and strip fields
+    let mut graph: Value = match serde_json::from_str(graph_json) {
+        Ok(v) => v,
+        Err(_) => {
+            // Can't parse — truncate at nearest char boundary (may break JSON but better than bloating)
+            let truncated: String = graph_json.chars().take(max_chars).collect();
+            return truncated;
+        }
+    };
+
+    // Remove fields in reverse priority order until we fit
+    let strippable = ["project", "errors", "files", "conventions", "decisions"];
+    for field in &strippable {
+        if graph.as_object().map_or(true, |o| !o.contains_key(*field)) {
+            continue;
+        }
+        let serialized = serde_json::to_string(&graph).unwrap_or_default();
+        if serialized.chars().count() <= max_chars {
+            break;
+        }
+        // Replace with minimal placeholder
+        if let Some(obj) = graph.as_object_mut() {
+            let replacement = match *field {
+                "project" => serde_json::json!({"name": "…"}),
+                "decisions" | "errors" => Value::Array(vec![]),
+                _ => Value::Object(serde_json::Map::new()),
+            };
+            obj.insert(field.to_string(), replacement);
+        }
+    }
+
+    // Final fallback: if still too large after stripping all, hard-truncate
+    let result = serde_json::to_string(&graph).unwrap_or_default();
+    if result.chars().count() > max_chars {
+        result.chars().take(max_chars).collect()
+    } else {
+        result
     }
 }

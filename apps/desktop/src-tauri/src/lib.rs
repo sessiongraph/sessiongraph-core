@@ -41,6 +41,7 @@ pub fn run() {
 
     tracing::info!("SessionGraph v{} starting", env!("CARGO_PKG_VERSION"));
 
+    let shutdown_state = state.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(state.clone())
@@ -48,12 +49,14 @@ pub fn run() {
         .setup(move |app| {
             app.manage(ProxyShutdown {
                 tx: Some(shutdown_tx),
+                state: shutdown_state,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::stats::get_dashboard_stats,
             commands::stats::get_current_session,
+            commands::stats::get_token_usage_chart,
             commands::sessions::list_sessions,
             commands::sessions::get_session,
             commands::sessions::get_session_graph,
@@ -66,6 +69,8 @@ pub fn run() {
             commands::settings::check_proxy_health,
             commands::settings::check_venv_status,
             commands::settings::setup_venv,
+            commands::settings::delete_all_data,
+            commands::settings::get_app_version,
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -76,10 +81,11 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Holds the oneshot sender for clean proxy shutdown.
-#[allow(dead_code)]
+/// Holds the oneshot sender for clean proxy shutdown, and a reference
+/// to the intercept state so we can end active sessions on drop.
 struct ProxyShutdown {
     tx: Option<tokio::sync::oneshot::Sender<()>>,
+    state: Arc<proxy::InterceptState>,
 }
 
 impl Drop for ProxyShutdown {
@@ -88,5 +94,12 @@ impl Drop for ProxyShutdown {
             let _ = tx.send(());
             tracing::info!("Proxy shutdown signal sent");
         }
+        // End all active sessions synchronously via block_in_place
+        let state = self.state.clone();
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                state.end_all_sessions().await;
+            })
+        });
     }
 }

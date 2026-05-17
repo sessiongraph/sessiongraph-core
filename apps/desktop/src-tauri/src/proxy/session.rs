@@ -14,6 +14,8 @@ const MAX_MESSAGE_SNAPSHOTS: usize = 10;
 pub struct ActiveSession {
     pub id: String,
     pub project_hash: String,
+    /// SHA256 hash of the API key, truncated to 16 chars. Used for session identity.
+    pub api_key_hash: String,
     pub project_name: Option<String>,
     pub provider: String,
     pub tool: Option<String>,
@@ -34,19 +36,20 @@ pub struct ActiveSession {
 impl ActiveSession {
     pub fn new(
         project_hash: String,
+        api_key_hash: String,
         project_name: Option<String>,
         provider: String,
         tool: Option<String>,
-        api_key: String,
     ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),
             project_hash,
+            api_key_hash,
             project_name,
             provider,
             tool,
-            api_key,
+            api_key: String::new(),
             started_at: now,
             last_request_at: now,
             message_count: 0,
@@ -117,6 +120,19 @@ fn strip_large_fields(body: &Value) -> Value {
     }
 }
 
+/// Hash an API key for session identity comparison.
+/// Returns a hex-encoded SHA-256 truncated to 16 characters.
+pub fn hash_api_key(api_key: &str) -> String {
+    if api_key.is_empty() {
+        return "unknown".to_string();
+    }
+    let digest = Sha256::digest(api_key.as_bytes());
+    digest[..8]
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
 /// Compute a stable project hash from available context.
 ///
 /// Priority:
@@ -181,7 +197,10 @@ pub fn infer_project_name(system_prompt: Option<&str>) -> Option<String> {
     // Look for GitHub repository name
     if let Some(gh) = prompt.to_lowercase().find("github.com/") {
         let rest = &prompt[gh + 11..];
-        let repo = rest.split_whitespace().next()?.split('/').next()?;
+        let path = rest.split_whitespace().next()?;
+        let segments: Vec<&str> = path.split('/').collect();
+        // github.com/user/repo → segments[0] = user, segments[1] = repo
+        let repo = if segments.len() >= 2 { segments[1] } else { segments[0] };
         if !repo.is_empty() && !repo.contains('.') && repo.len() < 50 {
             return Some(repo.to_string());
         }

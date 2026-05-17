@@ -13,7 +13,7 @@ export default function Onboarding({ onComplete }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [script, setScript] = useState("");
   const [health, setHealth] = useState<HealthStatus | null>(null);
-  const [venvStatus, setVenvStatus] = useState<VenvStatus | null>(null);
+  const [, setVenvStatus] = useState<VenvStatus | null>(null);
   const [venvSetupDone, setVenvSetupDone] = useState(false);
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState(false);

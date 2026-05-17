@@ -7,3 +7,9 @@ pub mod server;
 pub mod session;
 
 pub use intercept::InterceptState;
+
+#[cfg(test)]
+mod session_tests;
+
+#[cfg(test)]
+mod tests;

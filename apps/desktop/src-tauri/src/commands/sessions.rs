@@ -73,12 +73,8 @@ pub fn get_session(
     state: tauri::State<'_, Arc<InterceptState>>,
     id: String,
 ) -> Option<SessionSummary> {
-    // For simplicity, we return the first matching item from a list
-    // In production this would be a direct query
     let db = state.db.lock().ok()?;
-    // Use list_sessions_paginated with a large page and find by id
-    let (items, _) = queries::list_sessions_paginated(&db, 1, 1000).ok()?;
-    items.into_iter().find(|s| s.id == id)
+    queries::get_session_by_id(&db, &id).ok().flatten()
 }
 
 #[tauri::command]

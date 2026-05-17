@@ -5,7 +5,7 @@
 //! OpenAI-compatible endpoint. Provider is auto-detected from the API key
 //! prefix and headers — no user configuration needed.
 
-use axum::body::{Body, HttpBody};
+use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -13,8 +13,6 @@ use futures::stream::{Stream, StreamExt};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use tokio::sync::mpsc;
 
 type ByteStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send>>;
@@ -24,24 +22,6 @@ type ByteStream =
 pub struct ForwardResult {
     pub response: Response,
     pub token_count: Arc<AtomicU64>,
-}
-
-/// Spawns a task that monitors the response stream and sends the final token
-/// count to the provided channel once the stream is fully consumed.
-pub fn spawn_token_counter(
-    token_count: Arc<AtomicU64>,
-    tx: Option<mpsc::Sender<u64>>,
-) {
-    if let Some(sender) = tx {
-        tokio::spawn(async move {
-            // Wait a bit for the stream to be consumed - in practice this will
-            // be after the client receives the full response
-            // The counter is updated in real-time as bytes stream through
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let final_count = token_count.load(Ordering::Relaxed);
-            let _ = sender.send(final_count).await;
-        });
-    }
 }
 
 /// Estimates token count from byte count (4 chars ≈ 1 token).
@@ -234,7 +214,7 @@ async fn stream_post(
                 counter_clone.fetch_add(len, Ordering::Relaxed);
                 Ok(bytes)
             }
-            Err(e) => Err(e),
+            Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
         }
     }));
     let axum_body = Body::from_stream(byte_stream);

@@ -296,6 +296,83 @@ pub fn get_latest_graph_json(
     }
 }
 
+/// Get a single session by ID.
+pub fn get_session_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<SessionSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.project_hash, s.project_name, s.provider, s.tool,
+                s.started_at, s.ended_at, s.tokens_in_raw, s.tokens_in_sent,
+                s.cost_usd_raw, s.cost_usd_actual,
+                CASE WHEN g.project_hash IS NOT NULL THEN 1 ELSE 0 END as has_graph
+         FROM sessions s
+         LEFT JOIN session_graphs g ON s.project_hash = g.project_hash
+         WHERE s.id = ?1",
+    )?;
+
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(SessionSummary {
+            id: row.get(0)?,
+            project_hash: row.get(1)?,
+            project_name: row.get(2)?,
+            provider: row.get(3)?,
+            tool: row.get(4)?,
+            started_at: row.get(5)?,
+            ended_at: row.get(6)?,
+            tokens_in_raw: row.get::<_, i64>(7)?.unsigned_abs(),
+            tokens_in_sent: row.get::<_, i64>(8)?.unsigned_abs(),
+            cost_usd_raw: row.get(9)?,
+            cost_usd_actual: row.get(10)?,
+            has_graph: row.get::<_, i32>(11)? != 0,
+        })
+    })?;
+
+    match rows.next() {
+        Some(Ok(v)) => Ok(Some(v)),
+        Some(Err(e)) => Err(e.into()),
+        None => Ok(None),
+    }
+}
+
+/// Get token usage for the last N days (for the dashboard chart).
+pub fn get_token_usage_last_n_days(
+    conn: &Connection,
+    days: u32,
+) -> anyhow::Result<Vec<(String, u64, u64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT date,
+                COALESCE(SUM(tokens_in_raw), 0) as raw_tokens,
+                COALESCE(SUM(tokens_in_sent), 0) as sent_tokens
+         FROM token_usage_daily
+         WHERE date >= date('now', ?1)
+         GROUP BY date
+         ORDER BY date ASC",
+    )?;
+
+    let offset = format!("-{} days", days);
+    let rows = stmt.query_map(params![offset], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?.unsigned_abs(),
+            row.get::<_, i64>(2)?.unsigned_abs(),
+        ))
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Delete all data from all tables.
+pub fn delete_all_data(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "DELETE FROM requests;
+         DELETE FROM session_graphs;
+         DELETE FROM token_usage_daily;
+         DELETE FROM sessions;
+         DELETE FROM settings WHERE key NOT IN ('proxy_port', 'session_timeout_minutes',
+           'compression_enabled', 'graph_injection_enabled', 'graph_max_tokens', 'tier',
+           'sessions_saved_this_month', 'onboarding_complete');"
+    )?;
+    Ok(())
+}
+
 /// Paginated list of past sessions.
 pub fn list_sessions_paginated(
     conn: &Connection,

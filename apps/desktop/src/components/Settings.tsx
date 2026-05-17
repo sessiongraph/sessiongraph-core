@@ -29,9 +29,12 @@ interface Props {
 export default function Settings({ onClose }: Props) {
   const [settings, setSettings] = useState<SettingsType>(DEFAULTS);
   const [saved, setSaved] = useState(false);
+  const [appVersion, setAppVersion] = useState("…");
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     void tauri.getSettings().then(setSettings);
+    void tauri.getAppVersion().then(setAppVersion);
   }, []);
 
   const update = async (key: string, value: string) => {
@@ -41,10 +44,15 @@ export default function Settings({ onClose }: Props) {
     setTimeout(() => setSaved(false), 1500);
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (!confirm("Delete all session data? This cannot be undone.")) return;
-    // Data export/reset is a future feature — for now just log
-    console.log("Data reset requested");
+    setDeleting(true);
+    try {
+      await tauri.deleteAllData();
+    } catch (e) {
+      console.error("Delete failed:", e);
+    }
+    setDeleting(false);
   };
 
   return (
@@ -155,9 +163,10 @@ export default function Settings({ onClose }: Props) {
         </p>
         <button
           onClick={handleReset}
-          className="mt-3 rounded border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-red-400 hover:text-red-400"
+          disabled={deleting}
+          className="mt-3 rounded border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-red-400 hover:text-red-400 disabled:opacity-50"
         >
-          Delete all data
+          {deleting ? "Deleting…" : "Delete all data"}
         </button>
       </div>
 
@@ -167,7 +176,7 @@ export default function Settings({ onClose }: Props) {
           About
         </h3>
         <p className="mt-1 text-xs text-text-secondary">
-          SessionGraph v{settings.proxy_port ? "0.1.0" : "loading…"}
+          SessionGraph v{appVersion}
         </p>
       </div>
 

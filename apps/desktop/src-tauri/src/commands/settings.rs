@@ -214,6 +214,7 @@ pub fn set_proxy_env_vars(port: u16) {
 /// Merges our settings into the user's existing config rather than replacing it.
 /// Uses a "_sessiongraph" marker key to track our managed entries so we can
 /// remove them cleanly without touching user settings.
+#[cfg(windows)]
 fn write_opencode_config(port: u16) {
     let config_path = match opencode_config_path() {
         Some(p) => p,
@@ -264,6 +265,7 @@ fn write_opencode_config(port: u16) {
 
 /// Return the path opencode uses for its config file.
 /// Follows XDG: $XDG_CONFIG_HOME/opencode/opencode.json, else ~/.config/opencode/opencode.json
+#[cfg(windows)]
 fn opencode_config_path() -> Option<std::path::PathBuf> {
     let config_base = std::env::var("XDG_CONFIG_HOME")
         .ok()
@@ -317,8 +319,6 @@ unsafe fn windows_broadcast_setting_change(env_ptr: *const u16) {
     );
 }
 
-#[cfg(not(windows))]
-unsafe fn windows_broadcast_setting_change(_env_ptr: *const u16) {}
 
 /// Remove persistent user env vars for the proxy.
 /// Called when proxy stops so new processes fall back to direct connection.

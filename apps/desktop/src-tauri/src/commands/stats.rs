@@ -1,10 +1,13 @@
 //! Stats IPC commands. See spec section 7.
-//!
-//! Stub — returns zeroed/empty data. Real wiring lands in Week 1 Task 10.
 
+use chrono::Utc;
 use serde::Serialize;
+use std::sync::Arc;
 
-#[derive(Debug, Serialize, Default)]
+use crate::db::queries;
+use crate::proxy::InterceptState;
+
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct TodayStats {
     pub tokens_saved: u64,
     pub cost_saved_usd: f64,
@@ -12,14 +15,14 @@ pub struct TodayStats {
     pub sessions: u64,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct TotalStats {
     pub tokens_saved: u64,
     pub cost_saved_usd: f64,
     pub sessions: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CurrentSession {
     pub id: String,
     pub active: bool,
@@ -28,7 +31,7 @@ pub struct CurrentSession {
     pub compression_ratio: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct DashboardStats {
     pub today: TodayStats,
     pub total: TotalStats,
@@ -36,15 +39,57 @@ pub struct DashboardStats {
 }
 
 #[tauri::command]
-pub fn get_dashboard_stats() -> DashboardStats {
-    DashboardStats {
-        today: TodayStats::default(),
-        total: TotalStats::default(),
-        current_session: None,
-    }
+pub async fn get_dashboard_stats(
+    state: tauri::State<'_, Arc<InterceptState>>,
+) -> Result<DashboardStats, String> {
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+
+    let (today_stats, total_stats) = {
+        match state.db.lock() {
+            Ok(db) => (
+                queries::get_today_stats(&db, &today).ok(),
+                queries::get_total_stats(&db).ok(),
+            ),
+            Err(_) => (None, None),
+        }
+    };
+
+    let current_session = {
+        let sessions = state.active_sessions.lock().await;
+        sessions.first().map(|s| CurrentSession {
+            id: s.id.clone(),
+            active: true,
+            tokens_in_raw: s.tokens_in_raw,
+            tokens_in_sent: s.tokens_in_sent,
+            compression_ratio: if s.tokens_in_raw > 0 {
+                s.tokens_in_sent as f64 / s.tokens_in_raw as f64
+            } else {
+                0.0
+            },
+        })
+    };
+
+    Ok(DashboardStats {
+        today: today_stats.unwrap_or_default(),
+        total: total_stats.unwrap_or_default(),
+        current_session,
+    })
 }
 
 #[tauri::command]
-pub fn get_current_session() -> Option<CurrentSession> {
-    None
+pub async fn get_current_session(
+    state: tauri::State<'_, Arc<InterceptState>>,
+) -> Result<Option<CurrentSession>, String> {
+    let sessions = state.active_sessions.lock().await;
+    Ok(sessions.first().map(|s| CurrentSession {
+        id: s.id.clone(),
+        active: true,
+        tokens_in_raw: s.tokens_in_raw,
+        tokens_in_sent: s.tokens_in_sent,
+        compression_ratio: if s.tokens_in_raw > 0 {
+            s.tokens_in_sent as f64 / s.tokens_in_raw as f64
+        } else {
+            0.0
+        },
+    }))
 }

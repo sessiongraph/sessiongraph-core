@@ -1,17 +1,190 @@
 // Dashboard — primary view. See spec section 6.3.
-// Stub: real stats wiring lands in Week 1 Task 10.
+
+import { useEffect } from "react";
+import { useDashboardStore } from "../stores/dashboard";
+import SessionList from "./SessionList";
+import SessionDetail from "./SessionDetail";
+
+/** Format a USD amount with 2 decimal places. */
+function fmtUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+/** Format a token count with K/M suffix. */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+/** Short ordinal string (e.g. "42", "3 sessions"). */
+function fmtCount(n: number, unit: string): string {
+  return `${n} ${unit}${n !== 1 ? "s" : ""}`;
+}
+
 export default function Dashboard() {
+  const { stats, connected, fetchStats } = useDashboardStore();
+
+  // Poll the backend every 5 seconds
+  useEffect(() => {
+    void fetchStats();
+    const id = setInterval(() => void fetchStats(), 5_000);
+    return () => clearInterval(id);
+  }, [fetchStats]);
+
+  const today = stats?.today;
+  const total = stats?.total;
+  const live = stats?.current_session;
+
   return (
     <main className="mx-auto max-w-5xl px-8 py-10">
+      {/* ── Header ─────────────────────────────────────── */}
       <header className="flex items-center justify-between border-b border-border pb-4">
-        <h1 className="text-xl font-semibold">SessionGraph</h1>
-        <span className="text-sm text-text-secondary">Proxy Active</span>
+        <h1 className="text-xl font-semibold tracking-tight">SessionGraph</h1>
+        <div className="flex items-center gap-2 text-sm">
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${connected ? "bg-success" : "bg-text-secondary"}`}
+          />
+          <span className="text-text-secondary">
+            {connected ? "Proxy Active" : "Connecting…"}
+          </span>
+        </div>
       </header>
-      <section className="mt-10">
-        <p className="text-text-secondary">
-          Dashboard scaffold — live stats will appear here.
-        </p>
+
+      {/* ── Today stat cards ──────────────────────────── */}
+      <section className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatCard
+          label="Saved Today"
+          value={today ? fmtUsd(today.cost_saved_usd) : "—"}
+          sub={today ? fmtTokens(today.tokens_saved) + " tokens" : undefined}
+          accent="success"
+        />
+        <StatCard
+          label="Compression"
+          value={
+            live && live.tokens_in_raw > 0
+              ? `${((1 - live.compression_ratio) * 100).toFixed(0)}%`
+              : "—"
+          }
+          sub={live ? "avg ratio" : undefined}
+        />
+        <StatCard
+          label="Requests"
+          value={today ? String(today.requests) : "—"}
+          sub={today ? fmtCount(today.tokens_saved > 0 ? today.sessions : 0, "session") : undefined}
+        />
       </section>
+
+      {/* ── Monthly savings bar ──────────────────────── */}
+      <section className="mt-8 rounded-lg border border-border bg-surface p-5">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-text-secondary">THIS MONTH</span>
+          <span className="font-medium text-success">
+            {total ? fmtUsd(total.cost_saved_usd) + " saved" : "—"}
+          </span>
+        </div>
+        {total && total.tokens_saved > 0 ? (
+          <div className="mt-3 h-2 w-full rounded-full bg-border">
+            <div
+              className="h-2 rounded-full bg-success transition-all duration-700"
+              style={{
+                width: `${Math.min(
+                  (total.cost_saved_usd / (total.cost_saved_usd + 5)) * 100,
+                  100,
+                )}%`,
+              }}
+            />
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-text-secondary">
+            Start coding — savings will appear here as requests flow through the proxy.
+          </p>
+        )}
+      </section>
+
+      {/* ── Live session ─────────────────────────────── */}
+      {live && (
+        <section className="mt-6 rounded-lg border border-border bg-surface p-5">
+          <span className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            Live Session
+          </span>
+          <div className="mt-2 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            <div>
+              <p className="text-text-secondary">Session</p>
+              <p className="font-mono text-xs text-text-primary">
+                {live.id.slice(0, 8)}…
+              </p>
+            </div>
+            <div>
+              <p className="text-text-secondary">Tokens Sent</p>
+              <p className="text-text-primary">{fmtTokens(live.tokens_in_sent)}</p>
+            </div>
+            <div>
+              <p className="text-text-secondary">Raw Would Be</p>
+              <p className="text-text-primary">{fmtTokens(live.tokens_in_raw)}</p>
+            </div>
+            <div>
+              <p className="text-text-secondary">Saving</p>
+              <p className="text-success">
+                {((1 - live.compression_ratio) * 100).toFixed(0)}% fewer tokens
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ── Empty state ──────────────────────────────── */}
+      {!live && (
+        <section className="mt-8 text-center">
+          <p className="text-text-secondary">
+            No active session detected. Point your AI coding tool at
+            <code className="mx-1 rounded bg-surface px-1.5 py-0.5 text-sm text-accent">
+              http://localhost:4200
+            </code>
+            and start a conversation.
+          </p>
+          <p className="mt-1 text-xs text-text-secondary">
+            Set <code className="rounded bg-surface px-1 py-0.5 text-xs">ANTHROPIC_BASE_URL</code>
+            {" "}or{" "}
+            <code className="rounded bg-surface px-1 py-0.5 text-xs">OPENAI_BASE_URL</code>
+            {" "}to the proxy address.
+          </p>
+        </section>
+      )}
+
+      <SessionList />
+      <SessionDetail />
     </main>
+  );
+}
+
+// ── Stat card ──────────────────────────────────────────────────
+
+function StatCard({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  accent?: "success" | "accent";
+}) {
+  const valueColor =
+    accent === "success"
+      ? "text-success"
+      : accent === "accent"
+        ? "text-accent"
+        : "text-text-primary";
+
+  return (
+    <div className="rounded-lg border border-border bg-surface p-5">
+      <p className="text-xs font-medium uppercase tracking-wider text-text-secondary">
+        {label}
+      </p>
+      <p className={`mt-2 text-2xl font-semibold ${valueColor}`}>{value}</p>
+      {sub && <p className="mt-1 text-xs text-text-secondary">{sub}</p>}
+    </div>
   );
 }

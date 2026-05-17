@@ -82,6 +82,11 @@ export type HealthStatus = {
   uptime_seconds: number;
 };
 
+export type VenvStatus = {
+  ready: boolean;
+  python_path: string | null;
+};
+
 // --- Commands -------------------------------------------------------------
 
 export const tauri = {
@@ -110,4 +115,8 @@ export const tauri = {
   // onboarding
   getSetupScript: () => invoke<string>("get_setup_script"),
   checkProxyHealth: () => invoke<HealthStatus>("check_proxy_health"),
+
+  // venv / compression
+  checkVenvStatus: () => invoke<VenvStatus>("check_venv_status"),
+  setupVenv: () => invoke<string>("setup_venv"),
 };

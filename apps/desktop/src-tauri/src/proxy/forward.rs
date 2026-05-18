@@ -87,22 +87,42 @@ pub fn detect_provider(headers: &HeaderMap) -> Provider {
 
 /// Forward a request to Anthropic's Messages API.
 /// `base_url` overrides the default `https://api.anthropic.com`.
+/// `client_headers` are passed through so version and beta headers
+/// set by the calling SDK (e.g. Claude Code) reach the real API unchanged.
 pub async fn forward_anthropic(
     body: serde_json::Value,
     api_key: &str,
     base_url: Option<&str>,
+    client_headers: &HeaderMap,
 ) -> Result<ForwardResult, ForwardError> {
     let upstream = base_url
         .unwrap_or("https://api.anthropic.com")
         .trim_end_matches('/')
         .to_string()
         + "/v1/messages";
+
+    // Honour the API version the caller requested; fall back to a modern
+    // default that accepts all current features (incl. context_management).
+    let version = client_headers
+        .get("anthropic-version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("2023-06-01");
+
+    let beta = client_headers
+        .get("anthropic-beta")
+        .and_then(|v| v.to_str().ok());
+
+    let mut extra: Vec<(&str, &str)> = Vec::new();
+    if let Some(b) = beta {
+        extra.push(("anthropic-beta", b));
+    }
+
     stream_post(
         &upstream,
         body,
         Some(("x-api-key", api_key)),
-        Some(("anthropic-version", "2023-06-01")),
-        &[],
+        Some(("anthropic-version", version)),
+        &extra,
     )
     .await
 }

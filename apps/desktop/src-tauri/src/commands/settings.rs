@@ -111,8 +111,16 @@ fn cli_snippet(port: u16) -> String {
              \x20\x20   $env:ANTHROPIC_BASE_URL = $sgProxyUrl\n\
              \x20\x20   $env:OPENAI_BASE_URL = \"$sgProxyUrl/v1\"\n\
              \x20\x20   $env:CODEX_OSS_BASE_URL = $sgProxyUrl\n\
+             \x20 }} else {{\n\
+             \x20\x20   Remove-Item Env:ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue\n\
+             \x20\x20   Remove-Item Env:OPENAI_BASE_URL -ErrorAction SilentlyContinue\n\
+             \x20\x20   Remove-Item Env:CODEX_OSS_BASE_URL -ErrorAction SilentlyContinue\n\
              \x20 }}\n\
-             }} catch {{ }}\n"
+             }} catch {{\n\
+             \x20 Remove-Item Env:ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue\n\
+             \x20 Remove-Item Env:OPENAI_BASE_URL -ErrorAction SilentlyContinue\n\
+             \x20 Remove-Item Env:CODEX_OSS_BASE_URL -ErrorAction SilentlyContinue\n\
+             }}\n"
         )
     } else {
         format!(

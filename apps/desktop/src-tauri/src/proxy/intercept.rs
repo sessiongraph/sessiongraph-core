@@ -243,7 +243,8 @@ pub async fn handle_anthropic(
 
     // 5. Forward to upstream
     let forward_result =
-        forward::forward_anthropic(body, &api_key, state.anthropic_base_url.as_deref()).await?;
+        forward::forward_anthropic(body, &api_key, state.anthropic_base_url.as_deref(), headers)
+            .await?;
     let response = forward_result.response;
     let input_counter = forward_result.input_token_count;
     let output_counter = forward_result.output_token_count;

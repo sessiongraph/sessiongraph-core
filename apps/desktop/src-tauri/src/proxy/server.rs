@@ -333,7 +333,7 @@ async fn handle_connect_hyper(
         None => (host_port.clone(), 443),
     };
 
-    tracing::debug!("CONNECT to {host}:{port}");
+    tracing::info!("CONNECT {host}:{port}");
 
     let upgrade = hyper::upgrade::on(req);
     let mitm = state.mitm.clone();
@@ -349,13 +349,13 @@ async fn handle_connect_hyper(
 
         if let Some(mitm) = mitm {
             if is_intercept_host(&host) {
-                tracing::debug!("CONNECT: MITM intercept for {host}:{port}");
+                tracing::info!("CONNECT {host}:{port} → MITM intercept");
                 mitm::handle_connect(upgraded, &host, port, state, mitm).await;
                 return;
             }
         }
         // All other hosts get a transparent TCP tunnel.
-        tracing::debug!("CONNECT: tunnel passthrough for {host}:{port}");
+        tracing::info!("CONNECT {host}:{port} → tunnel passthrough");
         if let Err(e) = tunnel(upgraded, &host, port).await {
             tracing::debug!("Tunnel to {host}:{port} closed: {e}");
         }

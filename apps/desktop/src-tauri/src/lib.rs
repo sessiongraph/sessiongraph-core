@@ -39,6 +39,20 @@ fn activate_license(key: String) -> Result<license::LicenseStatus, String> {
     Ok(license::get_license_status())
 }
 
+/// Tauri IPC command — trigger an immediate usage sync to the server.
+/// Called after license activation so the web dashboard updates without waiting 24 hours.
+#[tauri::command]
+async fn sync_usage_now(
+    state: tauri::State<'_, Arc<proxy::InterceptState>>,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    sync_daily_usage(&client, &state.db).await;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Install rustls crypto provider process-wide before any TLS work.
@@ -86,6 +100,15 @@ pub fn run() {
 
     // Initialize the database
     let conn = db::init_db().expect("Failed to initialize SessionGraph database");
+
+    // Close sessions that were left 'active' from a crash or the pre-v0.1.3
+    // session-hash bug (one session per request). Anything older than 2 hours
+    // cannot be genuinely active — end it with a best-estimate ended_at.
+    match crate::db::queries::end_stale_sessions(&conn, 2) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("Closed {n} stale active sessions from previous run"),
+        Err(e) => tracing::warn!("Failed to close stale sessions: {e}"),
+    }
 
     // Read proxy port from settings (before connection is consumed by InterceptState)
     let proxy_port: u16 = crate::db::queries::get_setting(&conn, "proxy_port")
@@ -216,10 +239,17 @@ pub fn run() {
             commands::settings::remove_cli_profile,
             get_license_status,
             activate_license,
+            sync_usage_now,
         ])
-        .on_window_event(|_window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                tracing::info!("Window destroyed, proxy will shut down with app");
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Run proxy cleanup synchronously before the window is destroyed.
+                // This guarantees registry entries are removed even if Drop is slow.
+                tracing::info!("Window close requested — running proxy cleanup");
+                crate::commands::settings::remove_proxy_env_vars();
+                let _ = crate::commands::settings::set_system_proxy_sync(false);
+                // ProxyShutdown::drop will handle session end + shutdown signal.
+                let _ = window; // suppress unused warning
             }
         })
         .run(tauri::generate_context!())

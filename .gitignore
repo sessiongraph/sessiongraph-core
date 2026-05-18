@@ -37,3 +37,7 @@ Thumbs.db
 # Local SessionGraph data
 .sessiongraph/
 .sessiongraph-dev/
+
+# Audit / scratch notes (never committed)
+AUDIT.md
+testing/

@@ -42,6 +42,22 @@ pub fn end_session(conn: &Connection, id: &str, ended_at: &str) -> anyhow::Resul
     Ok(())
 }
 
+/// End all sessions still marked 'active' that started more than `stale_hours` ago.
+/// Run on startup to clear phantom sessions left from crashes or the pre-v0.1.3
+/// session-hash bug that created one session per request.
+/// Sets ended_at = started_at + 30 min (the session timeout) as a best estimate.
+pub fn end_stale_sessions(conn: &Connection, stale_hours: u32) -> anyhow::Result<u64> {
+    let rows = conn.execute(
+        "UPDATE sessions
+            SET status = 'ended',
+                ended_at = datetime(started_at, '+30 minutes')
+          WHERE status = 'active'
+            AND started_at < datetime('now', ?1)",
+        params![format!("-{stale_hours} hours")],
+    )?;
+    Ok(rows as u64)
+}
+
 /// Increment a session's counters after each request.
 #[allow(clippy::too_many_arguments)]
 pub fn increment_session(

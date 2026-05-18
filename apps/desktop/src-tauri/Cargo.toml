@@ -1,6 +1,6 @@
 [package]
 name = "sessiongraph-desktop"
-version = "0.1.4"
+version = "0.1.5"
 description = "SessionGraph desktop application"
 authors = ["SessionGraph"]
 edition = "2021"
@@ -42,6 +42,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 bytes = "1"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 
 [features]
 # This feature is used for production builds or when a dev server is not used.

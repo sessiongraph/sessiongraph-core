@@ -142,10 +142,9 @@ pub fn set_proxy_env_vars(_port: u16) {}
 
 #[cfg(windows)]
 pub fn set_proxy_env_vars(port: u16) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
     let proxy_url = format!("http://localhost:{port}");
     let openai_url = format!("http://localhost:{port}/v1");
+    let codex_url = format!("http://localhost:{port}");
 
     // Path to our MITM CA cert — Bun/Node.js tools read NODE_EXTRA_CA_CERTS
     // to trust additional certificates, which makes HTTPS_PROXY MITM work.
@@ -155,18 +154,10 @@ pub fn set_proxy_env_vars(port: u16) {
     };
 
     // HTTPS_PROXY / HTTP_PROXY intentionally NOT set here.
-    // Bun (opencode) applies HTTPS_PROXY globally, including to the Anthropic SDK,
-    // which causes it to CONNECT to api.anthropic.com even when provider.baseURL
-    // is set to our localhost address. Tools that can't read env vars get their own
-    // config files (see write_opencode_config). Tools that DO read ANTHROPIC_BASE_URL
-    // (claude-code) use that directly without needing HTTPS_PROXY.
-    // SSL_CERT_FILE intentionally NOT set: it replaces the entire system CA bundle,
-    // breaking TLS verification for all other hosts (e.g. Codex → api.openai.com).
+    // Bun (opencode) applies HTTPS_PROXY globally, causing CONNECT loops.
+    // SSL_CERT_FILE intentionally NOT set: it replaces the entire CA bundle.
     // NODE_EXTRA_CA_CERTS correctly ADDS our cert to the existing bundle.
-    //
-    // CODEX_OSS_BASE_URL: OpenAI Codex CLI (Rust binary) reads this env var instead
-    // of OPENAI_BASE_URL to override the upstream API base URL.
-    let codex_url = format!("http://localhost:{port}");
+    // CODEX_OSS_BASE_URL: OpenAI Codex CLI reads this instead of OPENAI_BASE_URL.
     let pairs: [(&str, &str); 4] = [
         ("ANTHROPIC_BASE_URL", &proxy_url),
         ("OPENAI_BASE_URL", &openai_url),
@@ -180,29 +171,11 @@ pub fn set_proxy_env_vars(port: u16) {
         std::env::set_var(name, value);
     }
 
-    // Persist to HKCU\Environment via setx so newly opened terminals inherit them.
-    let mut ok = true;
-    for (name, value) in &pairs {
-        let status = std::process::Command::new("setx")
-            .args([name, value])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                tracing::warn!(
-                    "setx {name}={value} failed: exit {}",
-                    s.code().unwrap_or(-1)
-                );
-                ok = false;
-            }
-            Err(e) => {
-                tracing::warn!("setx {name}={value} error: {e}");
-                ok = false;
-            }
-        }
+    // Persist to HKCU\Environment via direct registry write (no subprocess).
+    if let Err(e) = write_env_vars_to_registry(&pairs) {
+        tracing::warn!("Failed to persist proxy env vars to registry: {e}");
+    } else {
+        tracing::info!("Proxy env vars set for port {port}");
     }
 
     // Broadcast WM_SETTINGCHANGE so Explorer and already-open terminals
@@ -212,9 +185,51 @@ pub fn set_proxy_env_vars(port: u16) {
     // Write tool-specific config files so tools that ignore env vars
     // still get redirected to the proxy via their own config mechanism.
     write_opencode_config(port);
+}
 
-    if ok {
-        tracing::info!("Proxy env vars set for port {port}");
+/// Write env var key/value pairs directly to HKCU\Environment without spawning a subprocess.
+#[cfg(windows)]
+fn write_env_vars_to_registry(pairs: &[(&str, &str)]) -> std::io::Result<()> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE, REG_EXPAND_SZ};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env_key = hkcu.open_subkey_with_flags("Environment", KEY_SET_VALUE)?;
+    for (name, value) in pairs {
+        // Use REG_EXPAND_SZ so values with %USERPROFILE% etc. expand correctly.
+        env_key.set_raw_value(
+            name,
+            &winreg::RegValue {
+                bytes: encode_wide_sz(value),
+                vtype: REG_EXPAND_SZ,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Encode a string as a null-terminated UTF-16LE byte sequence (REG_SZ / REG_EXPAND_SZ).
+#[cfg(windows)]
+fn encode_wide_sz(s: &str) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0u16))
+        .collect();
+    wide.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// Delete env var entries directly from HKCU\Environment without spawning a subprocess.
+#[cfg(windows)]
+fn delete_env_vars_from_registry(names: &[&str]) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(env_key) = hkcu.open_subkey_with_flags("Environment", KEY_SET_VALUE) else {
+        return;
+    };
+    for name in names {
+        // Ignore errors — value may not exist
+        let _ = env_key.delete_value(name);
     }
 }
 
@@ -334,9 +349,8 @@ pub fn remove_proxy_env_vars() {}
 
 #[cfg(windows)]
 pub fn remove_proxy_env_vars() {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let names = [
+    // Remove directly from registry — no subprocess spawn, instant.
+    delete_env_vars_from_registry(&[
         "ANTHROPIC_BASE_URL",
         "OPENAI_BASE_URL",
         "CODEX_OSS_BASE_URL",
@@ -344,27 +358,21 @@ pub fn remove_proxy_env_vars() {
         "HTTP_PROXY",
         "NODE_EXTRA_CA_CERTS",
         "SSL_CERT_FILE",
-    ];
-    for name in &names {
-        let status = std::process::Command::new("reg")
-            .args(["delete", "HKCU\\Environment", "/v", name, "/f"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                tracing::warn!(
-                    "reg delete HKCU\\Environment /v {name} failed with exit code {}",
-                    s.code().unwrap_or(-1)
-                );
-            }
-            Err(e) => {
-                tracing::warn!("reg delete HKCU\\Environment /v {name} could not be launched: {e}");
-            }
-        }
+    ]);
+
+    // Also clear from the current process environment.
+    for name in &[
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_BASE_URL",
+        "CODEX_OSS_BASE_URL",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+    ] {
+        std::env::remove_var(name);
     }
+
     // Remove our provider overrides from opencode config (keep user settings intact).
     // We identify our entries by the localhost baseURL we injected.
     if let Some(config_path) = opencode_config_path() {
@@ -696,21 +704,8 @@ pub fn get_system_proxy_status() -> SystemProxyStatus {
         .to_string();
 
     let enabled = if cfg!(windows) {
-        // Check registry for AutoConfigURL pointing to our PAC file
-        std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "try {{ $v = Get-ItemPropertyValue -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -ErrorAction Stop; if ($v -eq 'file:///{escaped}') {{ 'true' }} else {{ 'false' }} }} catch {{ 'false' }}",
-                    escaped = pac_file_path.replace('\'', "''")
-                ),
-            ])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim() == "true")
-            .unwrap_or(false)
+        // Check registry for AutoConfigURL pointing to our PAC file — direct read, no subprocess.
+        check_pac_registry(&pac_file_path)
     } else {
         false
     };
@@ -726,40 +721,16 @@ pub fn set_system_proxy_sync(enabled: bool) -> Result<(), String> {
     let dir = sessiongraph_dir().ok_or("Cannot determine home directory")?;
     let pac_path = dir.join("proxy.pac");
 
-    if !pac_path.exists() {
+    if enabled && !pac_path.exists() {
         return Err("PAC file not found. Restart SessionGraph to create it.".to_string());
     }
 
-    let pac_url = format!("file:///{}", pac_path.to_string_lossy());
-
     if cfg!(windows) {
-        let cmd = if enabled {
-            format!(
-                "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -Value '{url}'",
-                url = pac_url
-            )
-        } else {
-            "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -ErrorAction SilentlyContinue".to_string()
-        };
-
-        let output = {
-            let mut c = std::process::Command::new("powershell");
-            c.args(["-NoProfile", "-Command", &cmd]);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            c.output()
-                .map_err(|e| format!("Failed to run PowerShell: {e}"))?
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let action = if enabled { "enable" } else { "disable" };
-            return Err(format!("Failed to {action} system proxy: {stderr}"));
+        #[cfg(windows)]
+        {
+            let pac_url = format!("file:///{}", pac_path.to_string_lossy().replace('\\', "/"));
+            set_pac_registry(enabled, &pac_url).map_err(|e| format!("Registry error: {e}"))?;
         }
-
         tracing::info!(
             "System proxy {}",
             if enabled { "enabled" } else { "disabled" }
@@ -769,6 +740,48 @@ pub fn set_system_proxy_sync(enabled: bool) -> Result<(), String> {
         tracing::warn!("set_system_proxy not implemented on this platform");
         Err("System proxy configuration is only supported on Windows".to_string())
     }
+}
+
+/// Read AutoConfigURL from registry and check if it matches our PAC file path.
+#[cfg(windows)]
+fn check_pac_registry(pac_file_path: &str) -> bool {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(inet) = hkcu.open_subkey_with_flags(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+        KEY_READ,
+    ) else {
+        return false;
+    };
+    let Ok(current): Result<String, _> = inet.get_value("AutoConfigURL") else {
+        return false;
+    };
+    let expected = format!("file:///{}", pac_file_path.replace('\\', "/"));
+    current == expected
+}
+
+/// Write or delete AutoConfigURL in the Internet Settings registry key.
+#[cfg(windows)]
+fn set_pac_registry(enabled: bool, pac_url: &str) -> std::io::Result<()> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let inet = hkcu.open_subkey_with_flags(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+        KEY_SET_VALUE,
+    )?;
+    if enabled {
+        inet.set_value("AutoConfigURL", &pac_url.to_string())?;
+    } else {
+        // Ignore NotFound — it may already be absent
+        match inet.delete_value("AutoConfigURL") {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// Enable or disable the system proxy (PAC file). IPC entry point.

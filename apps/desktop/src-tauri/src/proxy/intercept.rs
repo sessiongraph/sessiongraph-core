@@ -30,7 +30,6 @@ pub struct InterceptState {
     pub active_sessions: TokioMutex<Vec<ActiveSession>>,
     /// When the proxy started (for uptime)
     pub start_time: Instant,
-    /// Timeout in minutes before a session is considered ended
     /// The port the proxy is listening on
     pub proxy_port: u16,
     /// Timeout in minutes before a session is considered ended
@@ -47,6 +46,8 @@ pub struct InterceptState {
     pub restart_tx: TokioMutex<Option<tokio::sync::oneshot::Sender<()>>>,
     /// MITM TLS interception state (optional — None = tunnel passthrough)
     pub mitm: Option<Arc<MitmState>>,
+    /// Shared HTTP client — reused across requests for connection pooling.
+    pub http_client: reqwest::Client,
 }
 
 impl InterceptState {
@@ -79,6 +80,12 @@ impl InterceptState {
             .flatten()
             .filter(|v| !v.is_empty() && v != "https://api.openai.com");
 
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .no_proxy()
+            .build()
+            .expect("failed to build shared HTTP client");
+
         Self {
             db: Arc::new(Mutex::new(db)),
             active_sessions: TokioMutex::new(Vec::new()),
@@ -91,6 +98,7 @@ impl InterceptState {
             openai_base_url,
             restart_tx: TokioMutex::new(None),
             mitm: None,
+            http_client,
         }
     }
 
@@ -168,7 +176,6 @@ pub async fn handle_anthropic(
     let tool = forward::detect_tool(headers, &provider);
     let model = forward::extract_model(&body);
     let tokens_in_raw = forward::estimate_tokens(&body);
-    let cost_usd_raw = forward::compute_cost(&model, tokens_in_raw, 0);
 
     // 2. Session lifecycle (no token DB writes — that happens after the request)
     let project_name = session::infer_project_name(system_prompt);
@@ -242,9 +249,14 @@ pub async fn handle_anthropic(
     }
 
     // 5. Forward to upstream
-    let forward_result =
-        forward::forward_anthropic(body, &api_key, state.anthropic_base_url.as_deref(), headers)
-            .await?;
+    let forward_result = forward::forward_anthropic(
+        &state.http_client,
+        body,
+        &api_key,
+        state.anthropic_base_url.as_deref(),
+        headers,
+    )
+    .await?;
     let response = forward_result.response;
     let input_counter = forward_result.input_token_count;
     let output_counter = forward_result.output_token_count;
@@ -268,6 +280,9 @@ pub async fn handle_anthropic(
             tokens_in_sent
         };
 
+        // Cost of what we would have sent without compression (same output tokens both sides
+        // so savings = input compression benefit only, not contaminated by output cost).
+        let cost_usd_raw_final = forward::compute_cost(&model_clone, tokens_in_raw, tokens_out);
         let cost_usd_actual_with_out =
             forward::compute_cost(&model_clone, tokens_in_sent_final, tokens_out);
 
@@ -288,7 +303,7 @@ pub async fn handle_anthropic(
                 graph_injected,
                 graph_tokens,
                 latency_ms,
-                cost_usd_raw,
+                cost_usd_raw_final,
                 cost_usd_actual_with_out,
             );
             let _ = queries::upsert_daily_usage(
@@ -298,7 +313,7 @@ pub async fn handle_anthropic(
                 tokens_in_raw,
                 tokens_in_sent_final,
                 tokens_out,
-                cost_usd_raw,
+                cost_usd_raw_final,
                 cost_usd_actual_with_out,
             );
             let _ = queries::increment_session(
@@ -308,7 +323,7 @@ pub async fn handle_anthropic(
                 tokens_in_raw,
                 tokens_in_sent_final,
                 tokens_out,
-                cost_usd_raw,
+                cost_usd_raw_final,
                 cost_usd_actual_with_out,
             );
         })
@@ -356,7 +371,6 @@ pub async fn handle_openai_compatible(
     let tool = forward::detect_tool(headers, &provider);
     let model = forward::extract_model(&body);
     let tokens_in_raw = forward::estimate_tokens(&body);
-    let cost_usd_raw = forward::compute_cost(&model, tokens_in_raw, 0);
 
     // 2. Session lifecycle
     let project_name = session::infer_project_name(system_prompt);
@@ -429,8 +443,14 @@ pub async fn handle_openai_compatible(
     }
 
     // 5. Forward to upstream
-    let forward_result =
-        forward::forward_openai_compatible(body, &api_key, &provider, headers).await?;
+    let forward_result = forward::forward_openai_compatible(
+        &state.http_client,
+        body,
+        &api_key,
+        &provider,
+        headers,
+    )
+    .await?;
     let response = forward_result.response;
     let input_counter = forward_result.input_token_count;
     let output_counter = forward_result.output_token_count;
@@ -452,6 +472,8 @@ pub async fn handle_openai_compatible(
         } else {
             tokens_in_sent
         };
+        // Cost of raw input + same output tokens, so savings = input compression only.
+        let cost_usd_raw_final = forward::compute_cost(&model_clone, tokens_in_raw, tokens_out);
         let cost_usd_actual_with_out =
             forward::compute_cost(&model_clone, tokens_in_sent_final, tokens_out);
 
@@ -471,7 +493,7 @@ pub async fn handle_openai_compatible(
                 graph_injected,
                 graph_tokens,
                 latency_ms,
-                cost_usd_raw,
+                cost_usd_raw_final,
                 cost_usd_actual_with_out,
             );
             let _ = queries::upsert_daily_usage(
@@ -481,7 +503,7 @@ pub async fn handle_openai_compatible(
                 tokens_in_raw,
                 tokens_in_sent_final,
                 tokens_out,
-                cost_usd_raw,
+                cost_usd_raw_final,
                 cost_usd_actual_with_out,
             );
             let _ = queries::increment_session(
@@ -491,7 +513,7 @@ pub async fn handle_openai_compatible(
                 tokens_in_raw,
                 tokens_in_sent_final,
                 tokens_out,
-                cost_usd_raw,
+                cost_usd_raw_final,
                 cost_usd_actual_with_out,
             );
         })

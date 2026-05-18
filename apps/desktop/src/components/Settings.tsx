@@ -58,6 +58,8 @@ export default function Settings({ onClose }: Props) {
       const status = await tauri.activateLicense(key);
       setSettings((s) => ({ ...s, tier: status.tier }));
       setLicenseInput("");
+      // Trigger immediate sync so the web dashboard updates right away.
+      void tauri.syncUsageNow().catch(() => {});
     } catch (e) {
       setLicenseError(e instanceof Error ? e.message : String(e));
     } finally {

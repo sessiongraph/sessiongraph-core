@@ -68,7 +68,7 @@ jobs:
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
           releaseName: "SessionGraph ${{ github.ref_name }}"
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
 
   # Windows code signing: set TAURI_WINDOWS_CERTIFICATE_THUMBPRINT and

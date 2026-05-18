@@ -90,6 +90,7 @@ pub fn detect_provider(headers: &HeaderMap) -> Provider {
 /// `client_headers` are passed through so version and beta headers
 /// set by the calling SDK (e.g. Claude Code) reach the real API unchanged.
 pub async fn forward_anthropic(
+    client: &reqwest::Client,
     body: serde_json::Value,
     api_key: &str,
     base_url: Option<&str>,
@@ -118,6 +119,7 @@ pub async fn forward_anthropic(
     }
 
     stream_post(
+        client,
         &upstream,
         body,
         Some(("x-api-key", api_key)),
@@ -130,6 +132,7 @@ pub async fn forward_anthropic(
 /// Forward an OpenAI-format request to the appropriate upstream.
 /// Auto-detects the provider from the headers and routes accordingly.
 pub async fn forward_openai_compatible(
+    client: &reqwest::Client,
     body: serde_json::Value,
     api_key: &str,
     provider: &Provider,
@@ -166,6 +169,7 @@ pub async fn forward_openai_compatible(
 
     let auth_value = format!("Bearer {}", api_key);
     stream_post(
+        client,
         &upstream_url,
         body,
         Some(("Authorization", &auth_value)),
@@ -184,18 +188,13 @@ pub async fn forward_openai_compatible(
 /// For accurate counts, spawn a background task to read the counter after the
 /// stream completes.
 async fn stream_post(
+    client: &reqwest::Client,
     url: &str,
     body: serde_json::Value,
     auth_header: Option<(&str, &str)>,
     extra_single: Option<(&str, &str)>,
     extra_headers: &[(&str, &str)],
 ) -> Result<ForwardResult, ForwardError> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .no_proxy() // never route through system proxy — would loop back to ourselves
-        .build()
-        .map_err(|e| ForwardError::BuildClient(e.to_string()))?;
-
     let mut req = client.post(url).json(&body);
 
     if let Some((k, v)) = auth_header {

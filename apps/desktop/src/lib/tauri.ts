@@ -157,4 +157,7 @@ export const tauri = {
   // license
   getLicenseStatus: () => invoke<{ tier: string; valid: boolean; expires_at: string | null; source: string }>("get_license_status"),
   activateLicense: (key: string) => invoke<{ tier: string; valid: boolean; expires_at: string | null; source: string }>("activate_license", { key }),
+
+  // usage sync
+  syncUsageNow: () => invoke<void>("sync_usage_now"),
 };

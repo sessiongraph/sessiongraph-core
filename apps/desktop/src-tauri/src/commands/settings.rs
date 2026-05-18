@@ -404,6 +404,20 @@ pub fn remove_proxy_env_vars() {
     }
 
     broadcast_env_change();
+
+    // Also clear the PAC-based system proxy so traffic stops routing through
+    // the dead proxy port. Mirrors what set_system_proxy_sync(false) does.
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name AutoConfigURL -ErrorAction SilentlyContinue",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
     tracing::info!("Proxy env vars removed");
 }
 

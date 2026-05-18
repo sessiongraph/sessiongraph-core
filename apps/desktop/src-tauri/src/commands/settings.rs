@@ -703,12 +703,11 @@ pub fn get_system_proxy_status() -> SystemProxyStatus {
         .to_string_lossy()
         .to_string();
 
-    let enabled = if cfg!(windows) {
-        // Check registry for AutoConfigURL pointing to our PAC file — direct read, no subprocess.
-        check_pac_registry(&pac_file_path)
-    } else {
-        false
-    };
+    #[cfg(windows)]
+    let enabled = check_pac_registry(&pac_file_path);
+    #[cfg(not(windows))]
+    let enabled = false;
+    let _ = &pac_file_path; // suppress unused warning on non-Windows
 
     SystemProxyStatus {
         enabled,

@@ -16,9 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-universal
-            runner: macos-14
-            args: --target universal-apple-darwin
           - platform: windows-x64
             runner: windows-latest
             args: ""
@@ -40,8 +37,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -58,34 +53,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Import Apple certificate
-        id: cert
-        if: matrix.platform == 'macos-universal'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "No certificate secret — building unsigned"
-            echo "imported=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
-          security create-keychain -p "" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "" $KEYCHAIN_PATH
-          if ! security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
-               -A -t cert -f pkcs12 -k $KEYCHAIN_PATH; then
-            echo "Certificate import failed — building unsigned"
-            echo "imported=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-          echo "imported=true" >> "$GITHUB_OUTPUT"
-
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
 
@@ -96,12 +63,6 @@ jobs:
           SG_LICENSE_PUBLIC_KEY: ${{ secrets.SG_LICENSE_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ steps.cert.outputs.imported == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ steps.cert.outputs.imported == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ steps.cert.outputs.imported == 'true' && (secrets.APPLE_SIGNING_IDENTITY || '-') || '' }}
-          APPLE_ID: ${{ steps.cert.outputs.imported == 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ steps.cert.outputs.imported == 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ steps.cert.outputs.imported == 'true' && secrets.APPLE_TEAM_ID || '' }}
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}
